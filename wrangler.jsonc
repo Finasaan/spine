@@ -17,13 +17,13 @@
   },
   "placement": { "mode": "smart" },
   "keep_vars": false,
-  "route": "finasaan.com/api/*",
+  "routes": ["finasaan.com/api/*", "www.finasaan.com/api/*"],
 
   // preview environment
   "env": {
     "preview": {
       "name": "spine-preview",
-      "route": "finasaan.com/api/preview/*"
+      "routes": ["finasaan.com/api/preview/*", "www.finasaan.com/api/preview/*"]
     }
   }
 }
