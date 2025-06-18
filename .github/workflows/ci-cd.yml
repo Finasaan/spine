@@ -34,9 +34,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-    #   - name: Build application
-    #     run: npm run build:cf
-
   buildAndDeployPreview:
     name: Preview Build and Deploy Spine
     runs-on: ubuntu-latest
@@ -54,9 +51,6 @@ jobs:
 
       - name: Install dependencies
         run: npm install
-
-      - name: Build application
-        run: npm run build:cf
 
       - name: Deploy to cloudflare
         id: deployPreview
@@ -141,9 +135,6 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Build application
-        run: npm run build:cf
-
       - name: Deploy to cloudflare
         id: deployProduction
         uses: cloudflare/wrangler-action@v3
@@ -212,7 +203,7 @@ jobs:
   JobSummary:
     name: Job Summary
     runs-on: ubuntu-latest
-    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs:
       - buildAndDeployPreview
       - CreatePreviewRelease
