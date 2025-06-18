@@ -5,6 +5,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "spine",
+  "account_id": "345590cd19a379d6bf1008c6a7860451",
   "main": "src/index.ts",
   "compatibility_date": "2025-06-18",
   "assets": {
