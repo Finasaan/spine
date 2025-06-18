@@ -203,7 +203,7 @@ jobs:
   JobSummary:
     name: Job Summary
     runs-on: ubuntu-latest
-    if: always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: always() && (needs.CreatePreviewRelease.result == 'success' || needs.CreateProductionRelease.result == 'success')
     needs:
       - buildAndDeployPreview
       - CreatePreviewRelease
