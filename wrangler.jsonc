@@ -25,5 +25,11 @@
       "name": "spine-preview",
       "routes": ["finasaan.com/api/preview/*", "www.finasaan.com/api/preview/*"]
     }
+  },
+
+  // dev configuration
+  "dev": {
+    "port": 8787,
+    "local_protocol": "http"
   }
 }
