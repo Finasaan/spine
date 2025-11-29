@@ -4,10 +4,40 @@ The Spine is a Cloudflare Worker that serves as the backend API for the Finasaan
 
 ## Features
 
+- **Supabase Integration**: PostgreSQL database connection via Supabase client
+- **Companies API**: Access to company data and stock information
+- **Mutual Funds API**: Mutual fund listings and NAV data
+- **Sectors API**: Industry sector classification data
 - **Financial Tips API**: Provides curated financial advice and tips
 - **Health Check**: Service health monitoring endpoint
 - **CORS Support**: Configured for cross-origin requests from the frontend
 - **Simple HTTP API**: Easy to consume REST endpoints
+
+## Database Setup
+
+This service connects to a PostgreSQL database via Supabase. The schema is defined in `src/db/schema.sql`.
+
+### Local Development
+
+For local development, the service connects to a local Supabase instance (Docker). Configure your `.dev.vars` file:
+
+```bash
+# Local Supabase connection (Docker container)
+SUPABASE_URL=http://localhost:54321
+SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+```
+
+### Production Deployment
+
+For production, set the secrets using Wrangler:
+
+```bash
+npx wrangler secret put SUPABASE_URL
+# Enter your Supabase project URL when prompted
+
+npx wrangler secret put SUPABASE_KEY
+# Enter your Supabase anon key when prompted
+```
 
 ## API Endpoints
 

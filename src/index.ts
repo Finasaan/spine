@@ -1,64 +1,66 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { router } from "./routes";
 
+/**
+ * Spine API - Finasaan Backend Service
+ * Main application entry point
+ */
 const app = new Hono<{ Bindings: CloudflareBindings }>();
+
+// ============================================
+// Global Middleware
+// ============================================
 
 // Enable CORS for cross-origin requests
 app.use(
   "/*",
   cors({
     origin: ["http://localhost:3000", "https://*.finasaan.com"],
-    allowMethods: ["GET", "POST", "PUT", "DELETE"],
+    allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     allowHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
   })
 );
 
-app.get("/api/message", (c) => {
-  return c.text("Hello Hono!");
+// ============================================
+// Routes
+// ============================================
+
+// Mount all routes from router
+app.route("/", router);
+
+// ============================================
+// 404 Handler
+// ============================================
+
+app.notFound((c) => {
+  return c.json(
+    {
+      success: false,
+      error: "Not Found",
+      path: c.req.path,
+      timestamp: new Date().toISOString(),
+    },
+    404
+  );
 });
 
-// Simple financial tips API endpoint
-app.get("/api/financial-tips", (c) => {
-  const tips = [
-    {
-      id: 1,
-      title: "Start an Emergency Fund",
-      description: "Save 3-6 months of expenses for unexpected situations",
-      category: "savings",
-      priority: "high",
-    },
-    {
-      id: 2,
-      title: "Track Your Expenses",
-      description:
-        "Monitor where your money goes each month to identify saving opportunities",
-      category: "budgeting",
-      priority: "high",
-    },
-    {
-      id: 3,
-      title: "Invest Early",
-      description:
-        "Start investing as early as possible to benefit from compound interest",
-      category: "investing",
-      priority: "medium",
-    },
-  ];
+// ============================================
+// Error Handler
+// ============================================
 
-  return c.json({
-    success: true,
-    data: tips,
-    timestamp: new Date().toISOString(),
-  });
-});
-
-// Health check endpoint
-app.get("/api/health", (c) => {
-  return c.json({
-    status: "healthy",
-    service: "spine",
-    timestamp: new Date().toISOString(),
-  });
+app.onError((err, c) => {
+  console.error("Unhandled error:", err);
+  return c.json(
+    {
+      success: false,
+      error: "Internal Server Error",
+      message: err.message,
+      timestamp: new Date().toISOString(),
+    },
+    500
+  );
 });
 
 export default app;
