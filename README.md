@@ -8,177 +8,89 @@ This service connects to a PostgreSQL database via Supabase. The schema is defin
 
 ### Local Development
 
-For local development, the service connects to a local Supabase instance (Docker). Configure your `.dev.vars` file:
+For local development, the service connects to a local Supabase instance (Docker).
+
+From the project root:
 
 ```bash
-# Local Supabase connection (Docker container)
+cd supabase
+supabase start
+```
+
+2. Connect the service (use `.dev.vars`)
+
+```bash
+# create or update .dev.vars in project root
+cat > .dev.vars <<'EOF'
 SUPABASE_URL=http://localhost:54321
-SUPABASE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+SUPABASE_KEY=<anon-or-service-key>
+EOF
+
+# load into your shell for local runs
+export $(cat .dev.vars | xargs)
 ```
 
-Also, run the "sync-db" tool to initialize and sync the database schema:
-
-```bash./sync-db init
-./sync-db all
-```
-
-And then in the supabase folder, run:
-
-```bash
-supabase migration up
-```
-
-### Production Deployment
-
-For production, set the secrets using Wrangler:
-
-```bash
-npx wrangler secret put SUPABASE_URL
-# Enter your Supabase project URL when prompted
-
-npx wrangler secret put SUPABASE_KEY
-# Enter your Supabase anon key when prompted
-```
-
-## API Endpoints
-
-### GET /api/financial-tips
-
-Returns a list of financial tips with categories and priorities.
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": [
-    {
-      "id": 1,
-      "title": "Start an Emergency Fund",
-      "description": "Save 3-6 months of expenses for unexpected situations",
-      "category": "savings",
-      "priority": "high"
-    }
-  ],
-  "timestamp": "2025-01-01T00:00:00.000Z"
-}
-```
-
-### GET /api/health
-
-Health check endpoint for monitoring service status.
-
-**Response:**
-
-```json
-{
-  "status": "healthy",
-  "service": "spine",
-  "timestamp": "2025-01-01T00:00:00.000Z"
-}
-```
-
-### GET /api/message
-
-Simple test endpoint returning "Hello Hono!"
-
-## Local Development
-
-### Prerequisites
-
-- Node.js version 24+ (use `nvm use 24`)
-- npm or yarn
-- Wrangler CLI
-
-### Setup
-
-1. Install dependencies:
-
-```bash
-nvm use 24
-npm install
-```
-
-2. Start the development server:
-
-```bash
-npx wrangler dev
-```
-
-The API will be available on a random port (e.g., `http://localhost:40345`). Wrangler will display the actual port in the terminal output.
-
-### Testing the API
-
-You can test the endpoints using curl (replace the port with your actual port):
-
-```bash
-# Test health check
-curl http://localhost:40345/api/health
-
-# Test financial tips
-curl http://localhost:40345/api/financial-tips
-
-# Test message endpoint
-curl http://localhost:40345/api/message
-```
-
-## Running with Core Application
-
-To test the integration with the core frontend application:
-
-1. **Terminal 1** (Spine):
+3. Run the app locally (Wrangler dev)
 
 ```bash
 cd spine
 npx wrangler dev
 ```
 
-2. **Terminal 2** (Core):
+Local URL
+
+- When you run `npx wrangler dev` it prints the local worker URL (`http://127.0.0.1:8787`).
+- The Spine API will be available at `{LOCAL_URL}/api` (e.g. `http://127.0.0.1:8787/api/health`).
+
+4. Generate TypeScript types (required for typed DB access)
 
 ```bash
-cd core
-npx wrangler dev
+# regenerate types from the running DB (run from project root)
+./jobs/sync-db gen-types
+
+# then sync into services
+./jobs/sync-db sync
 ```
 
-3. Visit the Core frontend URL (displayed in terminal) to see the integration in action
-4. The Service bindings will automatically connect when both workers are running
+Why: generated types (`supabase/types/schema.ts`) provide accurate `Database` types used across services and prevent runtime type mismatches.
 
-**Note**: When using `npx wrangler dev`, both workers will run on random ports. The Service bindings handle the communication automatically, so you don't need to worry about specific ports.
+5. Cloudflare bindings — what & why
 
-## Deployment
+- Cloudflare bindings are the environment variables and secrets (e.g., `KV`, `R2`, `SUPABASE_URL`) that Workers use.
+- You declare them in `wrangler.toml` or as secrets via `wrangler secret put` so the worker can access external services securely.
 
-Deploy to Cloudflare Workers:
+6. Update schema (workflow)
+
+Option A — Manual migration (recommended):
 
 ```bash
-npx wrangler deploy
+cd supabase
+supabase migration new add-company-colors
+# edit the created file under supabase/migrations/*.sql and add your CREATE/ALTER statements
+cd ..
+./jobs/sync-db push    # apply migrations to local DB
+./jobs/sync-db gen-types
+./jobs/sync-db sync
 ```
 
-The spine worker can be deployed independently of the core application.
-
-## Type Generation
-
-Generate/synchronize types based on your Worker configuration:
+Option B — Make change in running DB and capture diff:
 
 ```bash
-npx wrangler types
+# 1) connect to DB and run DDL
+psql <DB_URL>
+# run: CREATE TABLE ...;
+
+# 2) capture diff
+./jobs/sync-db migrate add-company-colors
+# 3) review supabase/migrations and commit the new file
 ```
 
-## Configuration
+7. Commit and push migrations/types
 
-The Worker uses TypeScript with Cloudflare bindings. Pass the `CloudflareBindings` as generics when instantiating Hono:
-
-```ts
-// src/index.ts
-const app = new Hono<{ Bindings: CloudflareBindings }>();
+```bash
+git add supabase/migrations/* supabase/types/schema.ts
+git commit -m "db(migration): add company_colors table"
+git push
 ```
 
-## CORS Configuration
-
-The API is configured to accept requests from:
-
-- `http://localhost:3000` (local development)
-- `https://*.finasaan.com` (production domains)
-
-## Environment Variables
-
-No environment variables are required for basic operation. The API runs with default configuration and returns mock data for the POC.
+That's it — minimal, command-focused steps to get Spine running locally and keep DB schema/types in sync.

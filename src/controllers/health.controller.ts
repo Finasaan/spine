@@ -8,34 +8,41 @@ export const healthController = {
   /**
    * Basic health check
    */
-  healthCheck: (c: AppContext) => {
-    return c.json({
+  healthCheck: async (c: AppContext) => {
+    const base = {
       status: "healthy",
       service: "spine",
       timestamp: new Date().toISOString(),
-    });
-  },
+    };
 
-  /**
-   * Database connection test
-   */
-  dbTest: async (c: AppContext) => {
+    // include a lightweight DB check in the health response
     try {
       const supabase = getSupabaseClient(c.env);
       const { data, error } = await supabase
         .from("sectors")
-        .select("*")
-        .limit(5);
+        .select("id")
+        .limit(1);
 
       if (error) {
-        return c.json({ success: false, error: error.message }, 500);
+        return c.json(
+          { ...base, db: { ok: false, error: error.message } },
+          200
+        );
       }
 
-      return c.json(successResponse(data));
+      return c.json(
+        {
+          ...base,
+          db: { ok: true, sampleCount: Array.isArray(data) ? data.length : 0 },
+        },
+        200
+      );
     } catch (err) {
-      return c.json(errorResponse(err), 500);
+      return c.json({ ...base, db: { ok: false, error: String(err) } }, 200);
     }
   },
+
+  // dbTest removed — its check is included in `healthCheck`
 
   /**
    * Simple message endpoint
