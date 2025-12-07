@@ -23,6 +23,17 @@ app.use(
   })
 );
 
+// Strip /preview prefix for preview environment routes
+app.use("/*", (c, next) => {
+  const path = c.req.path;
+  if (path.startsWith("/api/preview/")) {
+    // Remove the /preview segment from the path
+    const originalPath = path.replace("/api/preview", "/api");
+    c.req.raw = new Request(new URL(originalPath, c.req.url).toString(), c.req.raw);
+  }
+  return next();
+});
+
 // ============================================
 // Routes
 // ============================================
