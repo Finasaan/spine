@@ -54,5 +54,6 @@ export function getSupabaseClient(env: {
   SUPABASE_ANON_KEY_PREVIEW?: any;
 }) {
   const config = getSupabaseConfig(env);
+  console.log("Using Supabase URL:", config.url);
   return createClient(config.url, config.key);
 }
