@@ -2,42 +2,37 @@ import { createClient } from "@supabase/supabase-js";
 
 /**
  * Environment-aware Supabase configuration
- * Determines which secret store binding to use based on the deployment environment
+ * Determines which environment variables to use based on the deployment context
  */
 function getSupabaseConfig(env: any): {
   url: string;
   key: string;
 } {
-  // Fallback to environment variables (for development/local use)
   if (env.SUPABASE_URL && env.SUPABASE_KEY) {
-    console.log("Using development Supabase credentials.");
-    return {
-      url: env.SUPABASE_URL,
-      key: env.SUPABASE_KEY,
-    };
+    const url = String(env.SUPABASE_URL);
+    const key = String(env.SUPABASE_KEY);
+    console.log("Using development Supabase credentials from env vars");
+    return { url, key };
   }
 
-  // Check for production secrets
+  // Check for production secrets (standard environment variables)
   if (env.SUPABASE_URL_PRODUCTION && env.SUPABASE_ANON_KEY_PRODUCTION) {
-    // console.log(ENVIRONMENT);
-    console.log("Using production Supabase credentials.");
-    return {
-      url: env.SUPABASE_URL_PRODUCTION,
-      key: env.SUPABASE_ANON_KEY_PRODUCTION,
-    };
+    const url = String(env.SUPABASE_URL_PRODUCTION);
+    const key = String(env.SUPABASE_ANON_KEY_PRODUCTION);
+    console.log("Using production Supabase credentials from env vars");
+    return { url, key };
   }
 
   // Check for preview secrets
   if (env.SUPABASE_URL_PREVIEW && env.SUPABASE_ANON_KEY_PREVIEW) {
-    console.log("Using preview Supabase credentials.");
-    return {
-      url: env.SUPABASE_URL_PREVIEW,
-      key: env.SUPABASE_ANON_KEY_PREVIEW,
-    };
+    const url = String(env.SUPABASE_URL_PREVIEW);
+    const key = String(env.SUPABASE_ANON_KEY_PREVIEW);
+    console.log("Using preview Supabase credentials from env vars");
+    return { url, key };
   }
 
   throw new Error(
-    "Supabase configuration not found. Please set SUPABASE_URL and SUPABASE_KEY or configure secret store bindings."
+    "Supabase configuration not found. Please set environment variables: SUPABASE_URL_PRODUCTION/SUPABASE_ANON_KEY_PRODUCTION (prod) or SUPABASE_URL_PREVIEW/SUPABASE_ANON_KEY_PREVIEW (preview) or SUPABASE_URL/SUPABASE_KEY (dev)"
   );
 }
 
@@ -52,13 +47,12 @@ function getSupabaseConfig(env: any): {
 export function getSupabaseClient(env: {
   SUPABASE_URL?: string;
   SUPABASE_KEY?: string;
-  SUPABASE_URL_PRODUCTION?: any;
-  SUPABASE_ANON_KEY_PRODUCTION?: any;
-  SUPABASE_URL_PREVIEW?: any;
-  SUPABASE_ANON_KEY_PREVIEW?: any;
+  SUPABASE_URL_PRODUCTION?: string;
+  SUPABASE_ANON_KEY_PRODUCTION?: string;
+  SUPABASE_URL_PREVIEW?: string;
+  SUPABASE_ANON_KEY_PREVIEW?: string;
 }) {
   const config = getSupabaseConfig(env);
   console.log("Using Supabase URL:", config.url);
-  console.log("All available env keys:", Object.keys(env));
   return createClient(config.url, config.key);
 }

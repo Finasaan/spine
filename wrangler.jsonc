@@ -44,6 +44,9 @@
         "finasaan.com/api/preview/*",
         "www.finasaan.com/api/preview/*"
       ],
+      "vars": {
+        "environment": "preview"
+      },
       "secrets_store_secrets": [
         {
           "binding": "SUPABASE_URL_PREVIEW",
