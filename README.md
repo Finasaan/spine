@@ -4,7 +4,7 @@ The Spine is a Cloudflare Worker that serves as the backend API for the Finasaan
 
 ## Database Setup
 
-This service connects to a PostgreSQL database via Supabase. The schema is defined in `src/db/schema.sql`.
+This service connects to a PostgreSQL database via Supabase. The schema is defined in `supabase/schema.sql` and `supabase/migrations/*.sql`.
 
 ### Local Development
 
