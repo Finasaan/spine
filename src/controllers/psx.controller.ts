@@ -10,7 +10,7 @@ export const psxController = {
    */
   getCompanies: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const limit = parseInt(c.req.query("limit") || "10");
       const offset = parseInt(c.req.query("offset") || "0");
 
@@ -34,7 +34,7 @@ export const psxController = {
    */
   getCompanyById: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const id = c.req.param("id");
 
       const { data, error } = await supabase
@@ -66,7 +66,7 @@ export const psxController = {
    */
   getCompanyBySymbol: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const symbol = c.req.param("symbol");
 
       const { data, error } = await supabase
@@ -98,7 +98,7 @@ export const psxController = {
    */
   getStockData: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const companyId = c.req.param("companyId");
       const limit = parseInt(c.req.query("limit") || "30");
       const offset = parseInt(c.req.query("offset") || "0");

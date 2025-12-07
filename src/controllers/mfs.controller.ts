@@ -10,7 +10,7 @@ export const mfsController = {
    */
   getMutualFunds: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const limit = parseInt(c.req.query("limit") || "10");
       const offset = parseInt(c.req.query("offset") || "0");
 
@@ -34,7 +34,7 @@ export const mfsController = {
    */
   getMutualFundById: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const id = c.req.param("id");
 
       const { data, error } = await supabase
@@ -66,7 +66,7 @@ export const mfsController = {
    */
   getMutualFundBySymbol: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const symbol = c.req.param("symbol");
 
       const { data, error } = await supabase
@@ -98,7 +98,7 @@ export const mfsController = {
    */
   getNavHistory: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const fundId = c.req.param("fundId");
       const limit = parseInt(c.req.query("limit") || "30");
       const offset = parseInt(c.req.query("offset") || "0");
@@ -125,7 +125,7 @@ export const mfsController = {
    */
   getFundProviders: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
 
       const { data, error } = await supabase.from("fund_providers").select("*");
 

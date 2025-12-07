@@ -17,7 +17,7 @@ export const healthController = {
 
     // include a lightweight DB check in the health response
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const { data, error } = await supabase
         .from("sectors")
         .select("id")

@@ -10,7 +10,7 @@ export const sectorsController = {
    */
   getSectors: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
 
       const { data, error } = await supabase.from("sectors").select("*");
 
@@ -29,7 +29,7 @@ export const sectorsController = {
    */
   getSectorById: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const id = c.req.param("id");
 
       const { data, error } = await supabase
@@ -57,7 +57,7 @@ export const sectorsController = {
    */
   getSectorCompanies: async (c: AppContext) => {
     try {
-      const supabase = getSupabaseClient(c.env);
+      const supabase = await getSupabaseClient(c.env);
       const sectorId = c.req.param("sectorId");
 
       const { data, error } = await supabase
