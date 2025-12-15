@@ -85,3 +85,63 @@ export async function getSupabaseClient(env: {
   console.log("Using Supabase URL:", config.url);
   return createClient(config.url, config.key);
 }
+
+/**
+ * Gets Supabase admin configuration with service role key
+ * Used for server-side JWT validation and admin operations
+ */
+async function getSupabaseAdminConfig(env: any): Promise<{
+  url: string;
+  serviceRoleKey: string;
+}> {
+  // Try development environment first
+  const devUrl = await getSecretValue(env.SUPABASE_URL);
+  const devServiceKey = await getSecretValue(env.SUPABASE_SERVICE_ROLE_KEY);
+  if (devUrl && devServiceKey) {
+    return { url: devUrl, serviceRoleKey: devServiceKey };
+  }
+
+  // Check for production secrets
+  const prodUrl = await getSecretValue(env.SUPABASE_URL_PRODUCTION);
+  const prodServiceKey = await getSecretValue(
+    env.SUPABASE_SERVICE_ROLE_KEY_PRODUCTION
+  );
+  if (prodUrl && prodServiceKey) {
+    return { url: prodUrl, serviceRoleKey: prodServiceKey };
+  }
+
+  // Check for preview secrets
+  const previewUrl = await getSecretValue(env.SUPABASE_URL_PREVIEW);
+  const previewServiceKey = await getSecretValue(
+    env.SUPABASE_SERVICE_ROLE_KEY_PREVIEW
+  );
+  if (previewUrl && previewServiceKey) {
+    return { url: previewUrl, serviceRoleKey: previewServiceKey };
+  }
+
+  throw new Error(
+    "Supabase admin configuration not found. Please set SUPABASE_SERVICE_ROLE_KEY environment variable."
+  );
+}
+
+/**
+ * Creates a Supabase admin client with service role key
+ * Use this for server-side JWT validation and admin operations
+ * WARNING: This bypasses RLS - never expose to clients
+ */
+export async function getSupabaseAdminClient(env: {
+  SUPABASE_URL?: string | any;
+  SUPABASE_SERVICE_ROLE_KEY?: string | any;
+  SUPABASE_URL_PRODUCTION?: string | any;
+  SUPABASE_SERVICE_ROLE_KEY_PRODUCTION?: string | any;
+  SUPABASE_URL_PREVIEW?: string | any;
+  SUPABASE_SERVICE_ROLE_KEY_PREVIEW?: string | any;
+}) {
+  const config = await getSupabaseAdminConfig(env);
+  return createClient(config.url, config.serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+}
