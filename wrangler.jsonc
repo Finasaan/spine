@@ -16,6 +16,9 @@
   "observability": {
     "enabled": true
   },
+  "ai": {
+    "binding": "AI"
+  },
   "placement": { "mode": "smart" },
   "keep_vars": false,
   "routes": ["finasaan.com/api/*", "www.finasaan.com/api/*"],
