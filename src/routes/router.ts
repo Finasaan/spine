@@ -5,6 +5,7 @@ import { sectorsRouter } from "./sectors.router";
 import { healthRouter } from "./health.router";
 import { authRouter } from "./auth.router";
 import { profileRouter } from "./profile.router";
+import { chatbotRouter } from "./chatbot.router";
 
 /**
  * Main Router - Registers all route modules
@@ -19,6 +20,7 @@ router.route("/api/profile", profileRouter);
 router.route("/api/psx", psxRouter);
 router.route("/api/mfs", mfsRouter);
 router.route("/api/sectors", sectorsRouter);
+router.route("/api/chatbot", chatbotRouter);
 
 // Preview routes (at /api/preview level)
 router.route("/api/preview", healthRouter);
@@ -27,5 +29,6 @@ router.route("/api/preview/profile", profileRouter);
 router.route("/api/preview/psx", psxRouter);
 router.route("/api/preview/mfs", mfsRouter);
 router.route("/api/preview/sectors", sectorsRouter);
+router.route("/api/preview/chatbot", chatbotRouter);
 
 export { router };
