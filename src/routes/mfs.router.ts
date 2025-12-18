@@ -18,4 +18,8 @@ mfsRouter.get("/funds/symbol/:symbol", mfsController.getMutualFundBySymbol);
 // NAV history
 mfsRouter.get("/funds/:fundId/nav", mfsController.getNavHistory);
 
+// Dashboard endpoints
+mfsRouter.get("/top-funds", mfsController.getTopFunds);
+
 export { mfsRouter };
+

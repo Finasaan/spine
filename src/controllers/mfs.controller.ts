@@ -6,18 +6,33 @@ import { AppContext, errorResponse, paginatedResponse } from "../types";
  */
 export const mfsController = {
   /**
-   * Get list of mutual funds
+   * Get list of mutual funds with optional search
+   * Query params: limit, offset, search
    */
   getMutualFunds: async (c: AppContext) => {
     try {
       const supabase = await getSupabaseClient(c.env);
-      const limit = parseInt(c.req.query("limit") || "10");
+      const limit = parseInt(c.req.query("limit") || "20");
       const offset = parseInt(c.req.query("offset") || "0");
+      const search = c.req.query("search") || "";
 
-      const { data, error, count } = await supabase
+      // Build base query - select fields needed for listing
+      let query = supabase
         .from("mutual_funds")
-        .select("*", { count: "exact" })
-        .range(offset, offset + limit - 1);
+        .select("id, symbol, name, aum, ytd, risk_profile", { count: "exact" });
+
+      // Add search filter if provided
+      if (search.trim()) {
+        query = query.or(
+          `symbol.ilike.%${search}%,name.ilike.%${search}%`
+        );
+      }
+
+      // Order by name and apply pagination
+      query = query.order("name", { ascending: true });
+      query = query.range(offset, offset + limit - 1);
+
+      const { data, error, count } = await query;
 
       if (error) {
         return c.json({ success: false, error: error.message }, 500);
@@ -136,6 +151,41 @@ export const mfsController = {
       return c.json({
         success: true,
         data,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      return c.json(errorResponse(err), 500);
+    }
+  },
+
+  /**
+   * Get top 10 mutual funds for dashboard display
+   */
+  getTopFunds: async (c: AppContext) => {
+    try {
+      const supabase = await getSupabaseClient(c.env);
+
+      const { data, error } = await supabase
+        .from("mutual_funds")
+        .select(`
+          id,
+          symbol,
+          name,
+          aum,
+          ytd,
+          risk_profile
+        `)
+        .not("ytd", "is", null)
+        .order("ytd", { ascending: false })
+        .limit(10);
+
+      if (error) {
+        return c.json({ success: false, error: error.message }, 500);
+      }
+
+      return c.json({
+        success: true,
+        data: data || [],
         timestamp: new Date().toISOString(),
       });
     } catch (err) {
