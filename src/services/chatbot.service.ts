@@ -51,15 +51,25 @@ export async function generateEmbeddings(
   ai: Ai,
   texts: string[]
 ): Promise<number[][]> {
-  const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
-    text: texts,
-  })) as EmbeddingResponse;
+  try {
+    const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
+      text: texts,
+    })) as EmbeddingResponse;
 
-  if (!response.data) {
-    throw new Error("Failed to generate embeddings");
+    if (!response.data) {
+      throw new Error("Failed to generate embeddings - no data returned");
+    }
+
+    return response.data;
+  } catch (error) {
+    // Check for Cloudflare AI upstream errors (common in local dev)
+    if (error instanceof Error && error.message.includes("1031")) {
+      throw new Error(
+        "Workers AI not available in local dev. Run with: wrangler dev --remote"
+      );
+    }
+    throw error;
   }
-
-  return response.data;
 }
 
 // ============================================
@@ -160,9 +170,8 @@ function formatContext(documents: StoredDocument[]): string {
       const contentType = doc.content_type || "text";
       const similarity = doc.similarity?.toFixed(2) || "N/A";
 
-      return `[Document ${
-        i + 1
-      }] (Company: ${company}, Period: ${period}, Type: ${contentType}, Relevance: ${similarity})
+      return `[Document ${i + 1
+        }] (Company: ${company}, Period: ${period}, Type: ${contentType}, Relevance: ${similarity})
 ${doc.content}`;
     })
     .join("\n\n---\n\n");
