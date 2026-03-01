@@ -1,6 +1,7 @@
 /**
  * User Tools — FinasaanGPT
  * Authenticated queries for user portfolio and watchlist.
+ * Tables: user_portfolios, user_portfolio_holdings, user_watchlists
  */
 
 import { tool } from "ai";
@@ -11,13 +12,13 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
   return {
     getUserPortfolio: tool({
       description:
-        "Get the user's investment portfolios and their holdings. Use this when the user asks about their portfolio, investments, holdings, or how their stocks are performing.",
+        "Get the user's investment portfolios and holdings. Use when the user asks about their portfolio or investments.",
       inputSchema: z.object({
         portfolioId: z
           .string()
           .optional()
           .describe(
-            "Specific portfolio UUID to fetch. If omitted, returns all portfolios."
+            "Specific portfolio UUID. If omitted, returns all portfolios.",
           ),
       }),
       execute: async ({ portfolioId }) => {
@@ -25,7 +26,7 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
           if (portfolioId) {
             // Fetch specific portfolio with holdings
             const { data: portfolio, error: pErr } = await supabase
-              .from("portfolios")
+              .from("user_portfolios")
               .select("id, name, description, created_at")
               .eq("id", portfolioId)
               .eq("user_id", userId)
@@ -36,14 +37,13 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
             }
 
             const { data: holdings, error: hErr } = await supabase
-              .from("portfolio_holdings")
+              .from("user_portfolio_holdings")
               .select(
                 `
-                id,
-                quantity,
-                average_price,
-                companies (symbol, name, current_price, change_percent)
-              `
+                id, quantity, purchase_price, purchase_date, notes,
+                companies ( id, symbol, company_name ),
+                mutual_funds ( id, symbol, name )
+              `,
               )
               .eq("portfolio_id", portfolioId);
 
@@ -61,22 +61,16 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
                 description: p.description,
                 holdings: (holdings || []).map((h: Record<string, unknown>) => {
                   const company = h.companies as Record<string, unknown> | null;
-                  const currentPrice = company?.current_price as number ?? 0;
-                  const avgPrice = h.average_price as number ?? 0;
-                  const qty = h.quantity as number ?? 0;
+                  const fund = h.mutual_funds as Record<string, unknown> | null;
                   return {
-                    symbol: company?.symbol,
-                    name: company?.name,
-                    quantity: qty,
-                    averagePrice: avgPrice,
-                    currentPrice,
-                    changePercent: company?.change_percent,
-                    currentValue: currentPrice * qty,
-                    gainLoss: (currentPrice - avgPrice) * qty,
-                    gainLossPercent:
-                      avgPrice > 0
-                        ? ((currentPrice - avgPrice) / avgPrice) * 100
-                        : null,
+                    id: h.id,
+                    assetType: company ? "stock" : "fund",
+                    symbol: company?.symbol ?? fund?.symbol,
+                    name: company?.company_name ?? fund?.name,
+                    quantity: h.quantity,
+                    purchasePrice: h.purchase_price,
+                    purchaseDate: h.purchase_date,
+                    notes: h.notes,
                   };
                 }),
               },
@@ -84,7 +78,7 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
           } else {
             // Fetch all portfolios (summary only)
             const { data, error } = await supabase
-              .from("portfolios")
+              .from("user_portfolios")
               .select("id, name, description, created_at")
               .eq("user_id", userId)
               .order("created_at", { ascending: false });
@@ -115,21 +109,20 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
 
     getUserWatchlist: tool({
       description:
-        "Get the user's stock watchlist. Use this when the user asks about their watchlist, saved stocks, or stocks they're following.",
+        "Get the user's stock and fund watchlist. Use when asked about watchlist or saved stocks.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
           const { data, error } = await supabase
-            .from("watchlist_items")
+            .from("user_watchlists")
             .select(
               `
               id,
-              created_at,
-              companies (symbol, name, current_price, change_percent, change_points, sector)
-            `
+              companies ( id, symbol, company_name ),
+              mutual_funds ( id, symbol, name )
+            `,
             )
-            .eq("user_id", userId)
-            .order("created_at", { ascending: false });
+            .eq("user_id", userId);
 
           if (error) {
             throw new Error(`Watchlist fetch failed: ${error.message}`);
@@ -138,14 +131,12 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
           return {
             watchlist: (data || []).map((item: Record<string, unknown>) => {
               const company = item.companies as Record<string, unknown> | null;
+              const fund = item.mutual_funds as Record<string, unknown> | null;
               return {
-                symbol: company?.symbol,
-                name: company?.name,
-                price: company?.current_price,
-                change: company?.change_points,
-                changePercent: company?.change_percent,
-                sector: company?.sector,
-                addedAt: item.created_at,
+                id: item.id,
+                assetType: company ? "stock" : "fund",
+                symbol: company?.symbol ?? fund?.symbol,
+                name: company?.company_name ?? fund?.name,
               };
             }),
             total: (data || []).length,

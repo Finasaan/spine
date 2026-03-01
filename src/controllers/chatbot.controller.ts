@@ -113,6 +113,23 @@ export async function handleStream(
     // Create tools
     const tools = createAllTools(supabase, c.env.AI, user.id);
 
+    // Log the request being sent to the LLM
+    const toolNames = Object.keys(tools);
+    console.log("[handleStream] LLM Request:", {
+      model: `${modelConfig.gatewayProvider}/${modelConfig.id}`,
+      baseUrl: c.env.AI_GATEWAY_BASE_URL,
+      toolCount: toolNames.length,
+      tools: toolNames,
+      messageCount: modelMessages.length,
+      messages: modelMessages.map((m) => ({
+        role: m.role,
+        contentPreview:
+          typeof m.content === "string"
+            ? m.content.substring(0, 100)
+            : "[complex content]",
+      })),
+    });
+
     // Stream response
     const result = streamText({
       model,
@@ -122,6 +139,36 @@ export async function handleStream(
       stopWhen: stepCountIs(8),
       temperature: 0.7,
       maxTokens: modelConfig.maxOutputTokens,
+      // Repair tool calls where the LLM sends strings instead of numbers/booleans
+      experimental_repairToolCall: async ({ toolCall, error }) => {
+        try {
+          const args = JSON.parse(toolCall.args);
+          // Coerce string values that look like numbers or booleans
+          for (const key of Object.keys(args)) {
+            const val = args[key];
+            if (typeof val === "string") {
+              if (/^\d+$/.test(val)) {
+                args[key] = parseInt(val, 10);
+              } else if (/^\d+\.\d+$/.test(val)) {
+                args[key] = parseFloat(val);
+              } else if (val === "true" || val === "false") {
+                args[key] = val === "true";
+              }
+            }
+          }
+          console.log(
+            `[repairToolCall] Fixed args for ${toolCall.toolName}:`,
+            args,
+          );
+          return { ...toolCall, args: JSON.stringify(args) };
+        } catch {
+          console.error(
+            `[repairToolCall] Could not repair ${toolCall.toolName}:`,
+            error,
+          );
+          return null;
+        }
+      },
       onFinish: async ({ text, steps }) => {
         // Persist after stream completes
         try {

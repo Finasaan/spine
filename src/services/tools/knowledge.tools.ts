@@ -12,26 +12,24 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
   return {
     searchKnowledge: tool({
       description:
-        "Search the Finasaan knowledge base for information about Pakistani stocks, company financial reports, insurance products, and mutual funds. Use this for any question about financial documents, company performance, coverage details, or investment products.",
+        "Search the Finasaan knowledge base for financial documents, company reports, insurance products, and mutual fund data. Input: query string.",
       inputSchema: z.object({
-        query: z
-          .string()
-          .describe("The search query to find relevant information"),
+        query: z.string().describe("Search query string"),
         domain: z
           .enum(["financials", "insurance", "mutual_funds", "all"])
           .optional()
           .default("all")
           .describe(
-            "Knowledge domain to search: 'financials' for company reports, 'insurance' for insurance products, 'mutual_funds' for fund data, 'all' for everything"
+            "Domain filter: financials, insurance, mutual_funds, or all",
           ),
-        limit: z
+        limit: z.coerce
           .number()
           .int()
           .min(1)
           .max(10)
           .optional()
           .default(5)
-          .describe("Number of results to return"),
+          .describe("Number of results"),
       }),
       execute: async ({ query, domain, limit }) => {
         try {
@@ -45,7 +43,7 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
               match_limit: limit ?? 5,
               filter_domain: domain === "all" ? null : (domain ?? null),
               min_similarity: 0.45,
-            }
+            },
           );
 
           if (error) {
@@ -87,15 +85,11 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
 
     searchConversationDocument: tool({
       description:
-        "Search within documents that the user has uploaded to this conversation. Use this when the user refers to an attached file or asks about content from their uploaded PDF.",
+        "Search within documents the user uploaded to this conversation. Input: query string and session ID.",
       inputSchema: z.object({
-        query: z
-          .string()
-          .describe("The search query to find relevant content in the document"),
-        sessionId: z
-          .string()
-          .describe("The current chat session ID"),
-        limit: z
+        query: z.string().describe("Search query string"),
+        sessionId: z.string().describe("Current chat session ID"),
+        limit: z.coerce
           .number()
           .int()
           .min(1)
@@ -116,7 +110,7 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
               p_session_id: sessionId,
               match_limit: limit ?? 4,
               min_similarity: 0.4,
-            }
+            },
           );
 
           if (error) {
@@ -148,7 +142,8 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
             sessionId,
             results: [],
             total: 0,
-            error: err instanceof Error ? err.message : "Document search failed",
+            error:
+              err instanceof Error ? err.message : "Document search failed",
           };
         }
       },

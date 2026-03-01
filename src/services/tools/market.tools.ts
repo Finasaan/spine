@@ -1,6 +1,7 @@
 /**
  * Market Data Tools — FinasaanGPT
  * Live structured data queries for PSX stocks and market summaries.
+ * Queries companies + daily_stock_data tables and market_summary.
  */
 
 import { tool } from "ai";
@@ -11,14 +12,14 @@ export function createMarketTools(supabase: SupabaseClient) {
   return {
     getMarketSummary: tool({
       description:
-        "Get the latest KSE-100 and KSE-30 index summary including current value, daily change, and volume. Use this when asked about the overall market, how the market is doing today, or general market conditions.",
+        "Get the latest KSE-100 and KSE-30 index values, daily change, and volume.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
           const { data, error } = await supabase
             .from("market_summary")
             .select("*")
-            .order("updated_at", { ascending: false })
+            .order("trade_date", { ascending: false })
             .limit(5);
 
           if (error) {
@@ -27,19 +28,22 @@ export function createMarketTools(supabase: SupabaseClient) {
 
           return {
             indices: (data || []).map((row: Record<string, unknown>) => ({
-              index: row.index_name,
-              value: row.current_value,
-              change: row.change_points,
-              changePercent: row.change_percent,
-              volume: row.volume,
-              updatedAt: row.updated_at,
+              indexName: row.index_name,
+              tradeDate: row.trade_date,
+              previousClose: row.previous_close,
+              currentClose: row.current_close,
+              netChange: row.net_change,
+              changePct: row.change_pct,
             })),
             timestamp: new Date().toISOString(),
           };
         } catch (err) {
           return {
             indices: [],
-            error: err instanceof Error ? err.message : "Failed to fetch market data",
+            error:
+              err instanceof Error
+                ? err.message
+                : "Failed to fetch market data",
           };
         }
       },
@@ -47,29 +51,25 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     searchCompanies: tool({
       description:
-        "Search for PSX-listed companies by name or ticker symbol. Use this when the user asks about a specific stock, company, or wants to find companies in a sector.",
+        "Search PSX-listed companies by name or ticker symbol. Input: search query string and optional limit.",
       inputSchema: z.object({
-        query: z
-          .string()
-          .describe("Company name or ticker symbol to search for"),
-        limit: z
+        query: z.string().describe("Company name or ticker symbol"),
+        limit: z.coerce
           .number()
           .int()
           .min(1)
           .max(20)
           .optional()
           .default(10)
-          .describe("Maximum number of results"),
+          .describe("Max results to return"),
       }),
       execute: async ({ query, limit }) => {
         try {
           const { data, error } = await supabase
             .from("companies")
-            .select(
-              "id, symbol, name, sector, current_price, change_percent, volume, market_cap"
-            )
-            .or(`symbol.ilike.%${query}%,name.ilike.%${query}%`)
-            .order("market_cap", { ascending: false, nullsFirst: false })
+            .select("id, symbol, company_name, sector_id")
+            .or(`symbol.ilike.%${query}%,company_name.ilike.%${query}%`)
+            .order("symbol", { ascending: true })
             .limit(limit ?? 10);
 
           if (error) {
@@ -81,12 +81,8 @@ export function createMarketTools(supabase: SupabaseClient) {
             companies: (data || []).map((c: Record<string, unknown>) => ({
               id: c.id,
               symbol: c.symbol,
-              name: c.name,
-              sector: c.sector,
-              price: c.current_price,
-              changePercent: c.change_percent,
-              volume: c.volume,
-              marketCap: c.market_cap,
+              companyName: c.company_name,
+              sectorId: c.sector_id,
             })),
             total: (data || []).length,
           };
@@ -103,21 +99,22 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     getStockDetail: tool({
       description:
-        "Get detailed information about a specific PSX stock by its ticker symbol, including price, change, volume, and recent trading data.",
+        "Get detailed info about a specific PSX stock including latest price data. Input: ticker symbol string like PTCL, TRG, HBL.",
       inputSchema: z.object({
-        symbol: z
-          .string()
-          .describe("The PSX ticker symbol (e.g. 'PTCL', 'TRG', 'HBL')"),
+        symbol: z.string().describe("PSX ticker symbol, e.g. PTCL or HBL"),
       }),
       execute: async ({ symbol }) => {
         try {
-          const { data, error } = await supabase
+          // Get company info
+          const { data: company, error: cErr } = await supabase
             .from("companies")
-            .select("*")
+            .select(
+              "id, symbol, company_name, sector_id, description, website_url, ceo_name",
+            )
             .ilike("symbol", symbol)
             .single();
 
-          if (error || !data) {
+          if (cErr || !company) {
             return {
               symbol,
               found: false,
@@ -125,28 +122,42 @@ export function createMarketTools(supabase: SupabaseClient) {
             };
           }
 
-          const company = data as Record<string, unknown>;
+          // Get latest price data
+          const { data: priceData } = await supabase
+            .from("daily_stock_data")
+            .select(
+              "trade_date, open_price, high_price, low_price, close_price, volume, value_traded",
+            )
+            .eq("company_id", company.id)
+            .order("trade_date", { ascending: false })
+            .limit(1)
+            .single();
 
           return {
             symbol: company.symbol,
-            name: company.name,
-            sector: company.sector,
-            price: company.current_price,
-            changePoints: company.change_points,
-            changePercent: company.change_percent,
-            volume: company.volume,
-            marketCap: company.market_cap,
-            high52w: company.high_52w,
-            low52w: company.low_52w,
-            peRatio: company.pe_ratio,
-            eps: company.eps,
+            companyName: company.company_name,
+            sectorId: company.sector_id,
+            description: company.description,
+            ceoName: company.ceo_name,
             found: true,
+            latestPrice: priceData
+              ? {
+                  tradeDate: priceData.trade_date,
+                  open: priceData.open_price,
+                  high: priceData.high_price,
+                  low: priceData.low_price,
+                  close: priceData.close_price,
+                  volume: priceData.volume,
+                  valueTraded: priceData.value_traded,
+                }
+              : null,
           };
         } catch (err) {
           return {
             symbol,
             found: false,
-            error: err instanceof Error ? err.message : "Failed to fetch stock data",
+            error:
+              err instanceof Error ? err.message : "Failed to fetch stock data",
           };
         }
       },
@@ -154,21 +165,14 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     getTopStocks: tool({
       description:
-        "Get a ranked list of top-performing or most active PSX stocks. Use this when the user asks for top gainers, losers, most active stocks, or best performers.",
+        "Get top-performing or most active PSX stocks by value traded on the latest trading day.",
       inputSchema: z.object({
         sortBy: z
-          .enum(["change_percent", "volume", "market_cap", "current_price"])
+          .enum(["value_traded", "volume", "close_price"])
           .optional()
-          .default("change_percent")
-          .describe(
-            "Sort stocks by: 'change_percent' (top gainers/losers), 'volume' (most active), 'market_cap' (largest companies)"
-          ),
-        order: z
-          .enum(["desc", "asc"])
-          .optional()
-          .default("desc")
-          .describe("'desc' for top gainers or largest, 'asc' for bottom performers"),
-        limit: z
+          .default("value_traded")
+          .describe("Sort by: value_traded, volume, or close_price"),
+        limit: z.coerce
           .number()
           .int()
           .min(1)
@@ -176,58 +180,59 @@ export function createMarketTools(supabase: SupabaseClient) {
           .optional()
           .default(10)
           .describe("Number of stocks to return"),
-        sector: z
-          .string()
-          .optional()
-          .describe("Filter by sector name (optional)"),
       }),
-      execute: async ({ sortBy, order, limit, sector }) => {
+      execute: async ({ sortBy, limit }) => {
         try {
-          let query = supabase
-            .from("companies")
-            .select("symbol, name, sector, current_price, change_percent, change_points, volume, market_cap")
-            .not("current_price", "is", null);
+          // Get latest trade date
+          const { data: latestData } = await supabase
+            .from("daily_stock_data")
+            .select("trade_date")
+            .order("trade_date", { ascending: false })
+            .limit(1)
+            .single();
 
-          if (sector) {
-            query = query.ilike("sector", `%${sector}%`);
+          if (!latestData) {
+            return { stocks: [], total: 0, error: "No trading data available" };
           }
 
-          const ascending = order === "asc";
-          query = query
-            .order(sortBy ?? "change_percent", {
-              ascending,
-              nullsFirst: false,
-            })
+          const { data, error } = await supabase
+            .from("daily_stock_data")
+            .select(
+              `
+              trade_date, open_price, close_price, volume, value_traded,
+              companies!inner ( id, symbol, company_name, sector_id )
+            `,
+            )
+            .eq("trade_date", latestData.trade_date)
+            .order(sortBy ?? "value_traded", { ascending: false })
             .limit(limit ?? 10);
-
-          const { data, error } = await query;
 
           if (error) {
             throw new Error(`Top stocks fetch failed: ${error.message}`);
           }
 
           return {
-            sortBy: sortBy ?? "change_percent",
-            order: order ?? "desc",
-            sector: sector ?? null,
-            stocks: (data || []).map((c: Record<string, unknown>) => ({
-              symbol: c.symbol,
-              name: c.name,
-              sector: c.sector,
-              price: c.current_price,
-              change: c.change_points,
-              changePercent: c.change_percent,
-              volume: c.volume,
-              marketCap: c.market_cap,
-            })),
+            tradeDate: latestData.trade_date,
+            sortBy: sortBy ?? "value_traded",
+            stocks: (data || []).map((d: Record<string, unknown>) => {
+              const comp = d.companies as Record<string, unknown>;
+              return {
+                symbol: comp?.symbol,
+                companyName: comp?.company_name,
+                openPrice: d.open_price,
+                closePrice: d.close_price,
+                volume: d.volume,
+                valueTraded: d.value_traded,
+              };
+            }),
             total: (data || []).length,
           };
         } catch (err) {
           return {
-            sortBy: sortBy ?? "change_percent",
             stocks: [],
             total: 0,
-            error: err instanceof Error ? err.message : "Failed to fetch top stocks",
+            error:
+              err instanceof Error ? err.message : "Failed to fetch top stocks",
           };
         }
       },
