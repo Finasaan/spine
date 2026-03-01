@@ -1,0 +1,1704 @@
+openapi: 3.0.0
+info:
+  title: Finasaan Spine API
+  description: |
+    Core backend service for Finasaan — financial data aggregation, AI-powered chatbot, portfolio management, and insurance document ingestion.
+    
+    **Authentication:** Protected endpoints use HttpOnly cookie `sb-token` (Supabase JWT). No explicit Authorization header needed.
+  version: 1.0.0
+  contact:
+    name: Finasaan Team
+
+servers:
+  - url: http://localhost:8787/api
+    description: Local development (Wrangler)
+  - url: https://api.finasaan.com/api
+    description: Production
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      operationId: getHealth
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /message:
+    get:
+      summary: Get a random financial tip message
+      operationId: getMessage
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Random financial tip
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Start investing early to benefit from compound interest!"
+
+  /financial-tips:
+    get:
+      summary: Get all financial tips
+      operationId: getFinancialTips
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Array of financial tips
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tips:
+                    type: array
+                    items:
+                      type: string
+                    example:
+                      - "Diversify your portfolio"
+                      - "Start investing early"
+
+  /auth/login:
+    post:
+      summary: Login with email and password
+      operationId: login
+      tags:
+        - Auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: SecurePassword123
+      responses:
+        '200':
+          description: Login successful (sets sb-token cookie)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      email:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+        '401':
+          description: Invalid credentials
+
+  /auth/signup:
+    post:
+      summary: Register a new user
+      operationId: signup
+      tags:
+        - Auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+                - fullName
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: newuser@example.com
+                password:
+                  type: string
+                  format: password
+                  example: SecurePassword123
+                fullName:
+                  type: string
+                  example: John Doe
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      email:
+                        type: string
+        '400':
+          description: User already exists or validation error
+
+  /auth/me:
+    get:
+      summary: Get current authenticated user
+      operationId: getCurrentUser
+      tags:
+        - Auth
+      security:
+        - CookieAuth: []
+      responses:
+        '200':
+          description: Current user data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  user:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      email:
+                        type: string
+                      full_name:
+                        type: string
+                      created_at:
+                        type: string
+                        format: date-time
+        '401':
+          description: Not authenticated
+
+  /auth/logout:
+    post:
+      summary: Logout current user
+      operationId: logout
+      tags:
+        - Auth
+      security:
+        - CookieAuth: []
+      responses:
+        '200':
+          description: Logout successful
+
+  /auth/oauth/google:
+    get:
+      summary: Initiate Google OAuth flow
+      operationId: googleOAuthInitiate
+      tags:
+        - Auth
+      responses:
+        '302':
+          description: Redirect to Google login
+
+  /auth/oauth/callback:
+    get:
+      summary: Google OAuth callback
+      operationId: googleOAuthCallback
+      tags:
+        - Auth
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '302':
+          description: Redirect to app with auth token
+
+  /profile:
+    get:
+      summary: Get user profile
+      operationId: getProfile
+      tags:
+        - Profile
+      security:
+        - CookieAuth: []
+      responses:
+        '200':
+          description: User profile data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  profile:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      user_id:
+                        type: string
+                      full_name:
+                        type: string
+                      bio:
+                        type: string
+                      avatar_url:
+                        type: string
+                      updated_at:
+                        type: string
+                        format: date-time
+        '401':
+          description: Not authenticated
+
+    put:
+      summary: Update user profile
+      operationId: updateProfile
+      tags:
+        - Profile
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name:
+                  type: string
+                  example: John Doe
+                bio:
+                  type: string
+                  example: "Investor interested in stocks and mutual funds"
+                avatar_url:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  profile:
+                    type: object
+
+  /companies:
+    get:
+      summary: List all companies (PSX stocks)
+      operationId: listCompanies
+      tags:
+        - PSX Stocks
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of companies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  companies:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        symbol:
+                          type: string
+                          example: ENGRO
+                        name:
+                          type: string
+                          example: Engro Corporation Ltd
+                        sector:
+                          type: string
+                        market_cap:
+                          type: number
+
+  /companies/{id}:
+    get:
+      summary: Get company by ID
+      operationId: getCompanyById
+      tags:
+        - PSX Stocks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Company details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  company:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      symbol:
+                        type: string
+                      name:
+                        type: string
+                      sector:
+                        type: string
+                      market_cap:
+                        type: number
+                      pe_ratio:
+                        type: number
+                      dividend_yield:
+                        type: number
+        '404':
+          description: Company not found
+
+  /companies/symbol/{symbol}:
+    get:
+      summary: Get company by symbol
+      operationId: getCompanyBySymbol
+      tags:
+        - PSX Stocks
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+            example: ENGRO
+      responses:
+        '200':
+          description: Company details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  company:
+                    type: object
+
+  /companies/{companyId}/stock-data:
+    get:
+      summary: Get historical stock data for a company
+      operationId: getStockData
+      tags:
+        - PSX Stocks
+      parameters:
+        - name: companyId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: Historical stock data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        open:
+                          type: number
+                        high:
+                          type: number
+                        low:
+                          type: number
+                        close:
+                          type: number
+                        volume:
+                          type: integer
+
+  /top-stocks:
+    get:
+      summary: Get top performing stocks
+      operationId: getTopStocks
+      tags:
+        - PSX Stocks
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Top stocks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  stocks:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        symbol:
+                          type: string
+                        name:
+                          type: string
+                        change_percent:
+                          type: number
+                        current_price:
+                          type: number
+
+  /providers:
+    get:
+      summary: List all mutual fund providers
+      operationId: listMFProviders
+      tags:
+        - Mutual Funds
+      responses:
+        '200':
+          description: List of providers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        code:
+                          type: string
+
+  /funds:
+    get:
+      summary: List all mutual funds
+      operationId: listFunds
+      tags:
+        - Mutual Funds
+      parameters:
+        - name: provider_id
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: List of funds
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  funds:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        symbol:
+                          type: string
+                        name:
+                          type: string
+                        provider:
+                          type: string
+                        category:
+                          type: string
+                        aum:
+                          type: number
+
+  /funds/{id}:
+    get:
+      summary: Get mutual fund by ID
+      operationId: getFundById
+      tags:
+        - Mutual Funds
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Fund details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  fund:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      symbol:
+                        type: string
+                      name:
+                        type: string
+                      nav:
+                        type: number
+                      aum:
+                        type: number
+
+  /funds/symbol/{symbol}:
+    get:
+      summary: Get fund by symbol
+      operationId: getFundBySymbol
+      tags:
+        - Mutual Funds
+      parameters:
+        - name: symbol
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Fund details
+
+  /funds/{fundId}/nav:
+    get:
+      summary: Get NAV history for a fund
+      operationId: getFundNAV
+      tags:
+        - Mutual Funds
+      parameters:
+        - name: fundId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: NAV history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  nav_history:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        date:
+                          type: string
+                          format: date
+                        nav:
+                          type: number
+                        units_outstanding:
+                          type: number
+
+  /top-funds:
+    get:
+      summary: Get top performing funds
+      operationId: getTopFunds
+      tags:
+        - Mutual Funds
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Top funds
+
+  /sectors:
+    get:
+      summary: List all sectors
+      operationId: listSectors
+      tags:
+        - Sectors
+      responses:
+        '200':
+          description: List of sectors
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  sectors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        companies_count:
+                          type: integer
+
+  /sectors/{id}:
+    get:
+      summary: Get sector by ID
+      operationId: getSectorById
+      tags:
+        - Sectors
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sector details
+
+  /sectors/{sectorId}/companies:
+    get:
+      summary: Get companies in a sector
+      operationId: getSectorCompanies
+      tags:
+        - Sectors
+      parameters:
+        - name: sectorId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Companies in sector
+
+  /market/summary:
+    get:
+      summary: Get market summary
+      operationId: getMarketSummary
+      tags:
+        - Market
+      responses:
+        '200':
+          description: Market summary data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  summary:
+                    type: object
+                    properties:
+                      total_market_cap:
+                        type: number
+                      daily_change:
+                        type: number
+                      daily_change_percent:
+                        type: number
+                      top_gainers:
+                        type: array
+                      top_losers:
+                        type: array
+
+  /market/ingest:
+    post:
+      summary: Ingest market data
+      operationId: ingestMarketData
+      tags:
+        - Market
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Optional date for backfill (defaults to today)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Ingestion successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  records_ingested:
+                    type: integer
+
+  /insurance/ingest:
+    post:
+      summary: Ingest and embed insurance documents
+      operationId: ingestInsurance
+      tags:
+        - Insurance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - document
+                - chunks
+              properties:
+                document:
+                  type: object
+                  required:
+                    - company_id
+                    - company_name
+                    - policy_name
+                    - document_hash
+                  properties:
+                    company_id:
+                      type: string
+                    company_name:
+                      type: string
+                    policy_name:
+                      type: string
+                    doc_type:
+                      type: string
+                      example: product_brochure
+                    source_url:
+                      type: string
+                      format: uri
+                    raw_text:
+                      type: string
+                    cleaned_text:
+                      type: string
+                    document_hash:
+                      type: string
+                chunks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      chunk_index:
+                        type: integer
+                      chunk_type:
+                        type: string
+                        enum: [body, table]
+                      text:
+                        type: string
+                      char_start:
+                        type: integer
+                      char_end:
+                        type: integer
+                      metadata:
+                        type: object
+      responses:
+        '200':
+          description: Documents embedded and stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  chunks_stored:
+                    type: integer
+                  document_id:
+                    type: string
+
+  /insurance/search:
+    post:
+      summary: Search insurance documents
+      operationId: searchInsurance
+      tags:
+        - Insurance
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  example: "What are the coverage limits?"
+                limit:
+                  type: integer
+                  default: 5
+      responses:
+        '200':
+          description: Search results with relevant chunks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        chunk_id:
+                          type: string
+                        text:
+                          type: string
+                        relevance_score:
+                          type: number
+                        document:
+                          type: object
+                          properties:
+                            company_name:
+                              type: string
+                            policy_name:
+                              type: string
+
+  /chat:
+    post:
+      summary: Send message to AI chatbot
+      operationId: sendChatMessage
+      tags:
+        - Chatbot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  example: "Which stocks are best for beginners?"
+                domain:
+                  type: string
+                  enum: [insurance, stocks, auto]
+                  description: Auto-detected if not provided
+                chat_id:
+                  type: string
+                  description: Session ID for conversation continuity
+                company:
+                  type: string
+                  description: Filter by company (stocks domain)
+                period:
+                  type: string
+                  enum: [1w, 1m, 3m, 1y, 5y]
+                  description: Time period for analysis
+      responses:
+        '200':
+          description: Chatbot response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  chat_id:
+                    type: string
+                  response:
+                    type: string
+                  sources:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                          enum: [company, document, fund]
+                        id:
+                          type: string
+                        title:
+                          type: string
+
+  /chat/models:
+    get:
+      summary: Get available AI models
+      operationId: getChatModels
+      tags:
+        - Chatbot
+      responses:
+        '200':
+          description: List of available models
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  models:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        provider:
+                          type: string
+
+  /chat/documents/upload:
+    post:
+      summary: Upload document for chatbot RAG
+      operationId: uploadChatDocument
+      tags:
+        - Chatbot
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                company:
+                  type: string
+                period:
+                  type: string
+      responses:
+        '200':
+          description: Document uploaded and processed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  document_id:
+                    type: string
+                  chunks_created:
+                    type: integer
+
+  /chat/documents:
+    post:
+      summary: Create document record for chatbot
+      operationId: createChatDocument
+      tags:
+        - Chatbot
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+                - title
+              properties:
+                url:
+                  type: string
+                  format: uri
+                title:
+                  type: string
+                company:
+                  type: string
+                period:
+                  type: string
+      responses:
+        '200':
+          description: Document created
+
+  /chat/chats:
+    get:
+      summary: List user's chat sessions
+      operationId: listChats
+      tags:
+        - Chatbot
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of chat sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  chats:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        title:
+                          type: string
+                        created_at:
+                          type: string
+                          format: date-time
+                        message_count:
+                          type: integer
+
+  /chat/chats/{id}:
+    get:
+      summary: Get chat session with messages
+      operationId: getChat
+      tags:
+        - Chatbot
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Chat session with full message history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  chat:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      title:
+                        type: string
+                      messages:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            id:
+                              type: string
+                            role:
+                              type: string
+                              enum: [user, assistant]
+                            content:
+                              type: string
+                            created_at:
+                              type: string
+                              format: date-time
+
+    delete:
+      summary: Delete chat session
+      operationId: deleteChat
+      tags:
+        - Chatbot
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Chat deleted
+
+  /watchlist:
+    get:
+      summary: Get user's watchlist
+      operationId: getWatchlist
+      tags:
+        - Watchlist
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [stock, fund, all]
+            default: all
+      responses:
+        '200':
+          description: User's watchlist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  watchlist:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        asset_id:
+                          type: string
+                        asset_type:
+                          type: string
+                          enum: [stock, fund]
+                        symbol:
+                          type: string
+                        name:
+                          type: string
+                        current_price:
+                          type: number
+                        change_percent:
+                          type: number
+                        added_at:
+                          type: string
+                          format: date-time
+
+    post:
+      summary: Add asset to watchlist
+      operationId: addToWatchlist
+      tags:
+        - Watchlist
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - asset_id
+                - asset_type
+              properties:
+                asset_id:
+                  type: string
+                asset_type:
+                  type: string
+                  enum: [stock, fund]
+      responses:
+        '201':
+          description: Added to watchlist
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  watchlist_item:
+                    type: object
+
+  /watchlist/{id}:
+    delete:
+      summary: Remove item from watchlist
+      operationId: removeFromWatchlist
+      tags:
+        - Watchlist
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Removed from watchlist
+
+  /watchlist/asset/{assetId}:
+    delete:
+      summary: Remove asset from watchlist by asset ID
+      operationId: removeAssetFromWatchlist
+      tags:
+        - Watchlist
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: assetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Asset removed from watchlist
+
+    get:
+      summary: Check if asset is on watchlist
+      operationId: checkWatchlistAsset
+      tags:
+        - Watchlist
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: assetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Watchlist status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  on_watchlist:
+                    type: boolean
+
+  /portfolio:
+    get:
+      summary: List user's portfolios
+      operationId: listPortfolios
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      responses:
+        '200':
+          description: User's portfolios
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  portfolios:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        total_value:
+                          type: number
+                        total_cost:
+                          type: number
+                        total_gain_loss:
+                          type: number
+                        created_at:
+                          type: string
+                          format: date-time
+
+    post:
+      summary: Create a new portfolio
+      operationId: createPortfolio
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  example: "My Stock Portfolio"
+                description:
+                  type: string
+      responses:
+        '201':
+          description: Portfolio created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  portfolio:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+
+  /portfolio/{id}:
+    get:
+      summary: Get portfolio details
+      operationId: getPortfolio
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Portfolio details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  portfolio:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      description:
+                        type: string
+                      total_value:
+                        type: number
+                      total_cost:
+                        type: number
+                      total_gain_loss:
+                        type: number
+                      gain_loss_percent:
+                        type: number
+                      created_at:
+                        type: string
+                        format: date-time
+
+    put:
+      summary: Update portfolio
+      operationId: updatePortfolio
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+      responses:
+        '200':
+          description: Portfolio updated
+
+    delete:
+      summary: Delete portfolio
+      operationId: deletePortfolio
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Portfolio deleted
+
+  /portfolio/{id}/summary:
+    get:
+      summary: Get portfolio summary with allocation
+      operationId: getPortfolioSummary
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Portfolio summary with metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  summary:
+                    type: object
+                    properties:
+                      portfolio_id:
+                        type: string
+                      total_value:
+                        type: number
+                      total_invested:
+                        type: number
+                      total_gain_loss:
+                        type: number
+                      gain_loss_percent:
+                        type: number
+                      daily_change:
+                        type: number
+                      daily_change_percent:
+                        type: number
+                      allocation:
+                        type: object
+                        properties:
+                          stocks:
+                            type: number
+                          funds:
+                            type: number
+                          cash:
+                            type: number
+                      top_holding:
+                        type: object
+                        properties:
+                          symbol:
+                            type: string
+                          value:
+                            type: number
+                          percent:
+                            type: number
+
+  /portfolio/{id}/holdings:
+    post:
+      summary: Add holding to portfolio
+      operationId: addHolding
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - asset_id
+                - asset_type
+                - quantity
+                - purchase_price
+              properties:
+                asset_id:
+                  type: string
+                asset_type:
+                  type: string
+                  enum: [stock, fund]
+                quantity:
+                  type: number
+                purchase_price:
+                  type: number
+                purchase_date:
+                  type: string
+                  format: date
+      responses:
+        '201':
+          description: Holding added
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  holding:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      symbol:
+                        type: string
+                      quantity:
+                        type: number
+                      purchase_price:
+                        type: number
+                      current_value:
+                        type: number
+                      gain_loss:
+                        type: number
+
+  /portfolio/{id}/holdings/{holdingId}:
+    put:
+      summary: Update holding
+      operationId: updateHolding
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: holdingId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                quantity:
+                  type: number
+                purchase_price:
+                  type: number
+      responses:
+        '200':
+          description: Holding updated
+
+    delete:
+      summary: Remove holding from portfolio
+      operationId: deleteHolding
+      tags:
+        - Portfolio
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: holdingId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Holding removed
+
+components:
+  securitySchemes:
+    CookieAuth:
+      type: apiKey
+      in: cookie
+      name: sb-token
+      description: Supabase JWT token in HttpOnly cookie (automatically included in browser requests)
