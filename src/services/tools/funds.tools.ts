@@ -1,7 +1,7 @@
 /**
  * Mutual Funds Tools — FinasaanGPT
  * Flexible query tools for Pakistani mutual funds.
- * Tables: mutual_funds, mutual_fund_nav_history, fund_providers
+ * Tables: mutual_funds, mutual_fund_nav_history, fund_providers, sectors
  */
 
 import { tool } from "ai";
@@ -12,7 +12,7 @@ export function createFundsTools(supabase: SupabaseClient) {
   return {
     queryMutualFunds: tool({
       description:
-        "Query Pakistani mutual funds with flexible filters. Use this for any fund-related question: searching, filtering by category/risk, ranking by performance or size, or listing funds. Supports combining multiple filters.",
+        "Query Pakistani mutual funds with flexible filters. Use this for any fund-related question: searching, filtering by category/risk, ranking by performance or size, calculating returns over any period (1 month to 5 years), or listing funds. Supports combining multiple filters.",
       inputSchema: z.object({
         search: z
           .string()
@@ -33,26 +33,42 @@ export function createFundsTools(supabase: SupabaseClient) {
           .optional()
           .default("all")
           .describe(
-            "Fund category filter. Use 'equity' for equity funds, 'money_market' for money market, etc.",
+            "Fund category filter. Use 'equity' for equity funds, 'money_market' for money market, 'islamic_equity' for Islamic equity, etc.",
           ),
         riskProfile: z
           .enum(["low", "medium", "high", "all"])
           .optional()
           .default("all")
           .describe("Filter by risk level"),
+        providerId: z
+          .string()
+          .optional()
+          .describe(
+            "Filter by fund provider/AMC UUID (get from getFundProviders tool)",
+          ),
         sortBy: z
-          .enum(["ytd", "aum", "name"])
+          .enum(["ytd", "aum", "name", "return"])
           .optional()
           .default("name")
           .describe(
-            "Sort results by: ytd (year-to-date return %), aum (assets under management), or name",
+            "Sort results by: ytd (year-to-date %), aum (assets under management), name, or return (computed return over returnPeriodMonths)",
+          ),
+        returnPeriodMonths: z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(60)
+          .optional()
+          .default(12)
+          .describe(
+            "When sortBy is 'return', compute returns over this many months. E.g. 12 = 1 year, 36 = 3 years, 60 = 5 years. Default 12.",
           ),
         sortOrder: z
           .enum(["asc", "desc"])
           .optional()
           .default("desc")
           .describe(
-            "Sort order. Default desc for ytd/aum (best first), asc for name (A-Z)",
+            "Sort order. Default desc for ytd/aum/return (best first), asc for name (A-Z)",
           ),
         limit: z.coerce
           .number()
@@ -67,11 +83,18 @@ export function createFundsTools(supabase: SupabaseClient) {
         search,
         category,
         riskProfile,
+        providerId,
         sortBy,
+        returnPeriodMonths,
         sortOrder,
         limit,
       }) => {
         try {
+          const effectiveSortBy = sortBy ?? "name";
+          const effectiveSortOrder =
+            sortOrder ?? (effectiveSortBy === "name" ? "asc" : "desc");
+          const effectiveLimit = limit ?? 10;
+
           let query = supabase
             .from("mutual_funds")
             .select(
@@ -109,16 +132,150 @@ export function createFundsTools(supabase: SupabaseClient) {
             }
           }
 
+          // Provider/AMC filter
+          if (providerId) {
+            query = query.eq("provider_id", providerId);
+          }
+
           // Risk profile filter
           if (riskProfile && riskProfile !== "all") {
             query = query.ilike("risk_profile", riskProfile);
           }
 
-          // Sorting
-          const effectiveSortBy = sortBy ?? "name";
-          const effectiveSortOrder =
-            sortOrder ?? (effectiveSortBy === "name" ? "asc" : "desc");
+          // --------------------------------------------------
+          // If sorting by computed return, we need to fetch NAV
+          // history and compute returns in JS
+          // --------------------------------------------------
+          if (effectiveSortBy === "return") {
+            // Fetch a broader set of funds (up to 50) first, then rank
+            const { data: funds, error: fundsErr } = await query.limit(50);
 
+            if (fundsErr) {
+              throw new Error(`Fund query failed: ${fundsErr.message}`);
+            }
+
+            if (!funds || funds.length === 0) {
+              return { funds: [], total: 0 };
+            }
+
+            const months = returnPeriodMonths ?? 12;
+            const startDate = new Date();
+            startDate.setMonth(startDate.getMonth() - months);
+            const startDateStr = startDate.toISOString().split("T")[0];
+
+            const fundIds = funds.map(
+              (f: Record<string, unknown>) => f.id as string,
+            );
+
+            // Get latest NAV for each fund
+            const { data: latestNavs } = await supabase
+              .from("mutual_fund_nav_history")
+              .select("fund_id, nav_price, nav_date")
+              .in("fund_id", fundIds)
+              .order("nav_date", { ascending: false });
+
+            // Get oldest NAV near the start date for each fund
+            const { data: oldNavs } = await supabase
+              .from("mutual_fund_nav_history")
+              .select("fund_id, nav_price, nav_date")
+              .in("fund_id", fundIds)
+              .lte("nav_date", startDateStr)
+              .order("nav_date", { ascending: false });
+
+            // Build NAV lookup maps (first occurrence per fund = latest/closest)
+            const latestNavMap = new Map<
+              string,
+              { nav: number; date: string }
+            >();
+            const oldNavMap = new Map<string, { nav: number; date: string }>();
+
+            for (const row of (latestNavs || []) as Array<{
+              fund_id: string;
+              nav_price: number;
+              nav_date: string;
+            }>) {
+              if (!latestNavMap.has(row.fund_id)) {
+                latestNavMap.set(row.fund_id, {
+                  nav: row.nav_price,
+                  date: row.nav_date,
+                });
+              }
+            }
+
+            for (const row of (oldNavs || []) as Array<{
+              fund_id: string;
+              nav_price: number;
+              nav_date: string;
+            }>) {
+              if (!oldNavMap.has(row.fund_id)) {
+                oldNavMap.set(row.fund_id, {
+                  nav: row.nav_price,
+                  date: row.nav_date,
+                });
+              }
+            }
+
+            // Compute returns and attach to funds
+            const fundsWithReturn = funds
+              .map((f: Record<string, unknown>) => {
+                const id = f.id as string;
+                const latest = latestNavMap.get(id);
+                const old = oldNavMap.get(id);
+
+                let returnPct: number | null = null;
+                if (latest && old && old.nav > 0) {
+                  returnPct =
+                    Math.round(((latest.nav - old.nav) / old.nav) * 100 * 100) /
+                    100;
+                }
+
+                return {
+                  id: f.id,
+                  symbol: f.symbol,
+                  name: f.name,
+                  providerId: f.provider_id,
+                  sectorId: f.sector_id,
+                  aum: f.aum,
+                  ytdReturn: f.ytd,
+                  riskProfile: f.risk_profile,
+                  description: f.description,
+                  inceptionDate: f.inception_date,
+                  returnPct,
+                  returnPeriodMonths: months,
+                  latestNav: latest?.nav ?? null,
+                  latestNavDate: latest?.date ?? null,
+                };
+              })
+              .filter((f: { returnPct: number | null }) => f.returnPct !== null)
+              .sort(
+                (
+                  a: { returnPct: number | null },
+                  b: { returnPct: number | null },
+                ) =>
+                  effectiveSortOrder === "desc"
+                    ? (b.returnPct ?? 0) - (a.returnPct ?? 0)
+                    : (a.returnPct ?? 0) - (b.returnPct ?? 0),
+              )
+              .slice(0, effectiveLimit);
+
+            return {
+              filters: {
+                search: search || null,
+                category: category ?? "all",
+                riskProfile: riskProfile ?? "all",
+                providerId: providerId || null,
+                sortBy: "return",
+                returnPeriodMonths: months,
+                sortOrder: effectiveSortOrder,
+              },
+              funds: fundsWithReturn,
+              total: fundsWithReturn.length,
+            };
+          }
+
+          // --------------------------------------------------
+          // Standard sorting (ytd, aum, name) — direct DB query
+          // --------------------------------------------------
           if (effectiveSortBy === "ytd") {
             query = query
               .not("ytd", "is", null)
@@ -133,7 +290,7 @@ export function createFundsTools(supabase: SupabaseClient) {
             });
           }
 
-          query = query.limit(limit ?? 10);
+          query = query.limit(effectiveLimit);
 
           const { data, error } = await query;
 
@@ -146,6 +303,7 @@ export function createFundsTools(supabase: SupabaseClient) {
               search: search || null,
               category: category ?? "all",
               riskProfile: riskProfile ?? "all",
+              providerId: providerId || null,
               sortBy: effectiveSortBy,
               sortOrder: effectiveSortOrder,
             },
@@ -235,7 +393,7 @@ export function createFundsTools(supabase: SupabaseClient) {
 
     getFundNavHistory: tool({
       description:
-        "Get NAV (Net Asset Value) price history for a mutual fund. Use this to analyze fund performance trends, show price charts, or calculate returns over a period.",
+        "Get NAV (Net Asset Value) price history for a mutual fund. Use this to analyze fund performance trends, show price charts, or calculate returns over a period. Supports up to 5 years of history.",
       inputSchema: z.object({
         fundId: z
           .string()
@@ -244,16 +402,18 @@ export function createFundsTools(supabase: SupabaseClient) {
           .number()
           .int()
           .min(1)
-          .max(365)
+          .max(1825)
           .optional()
           .default(30)
-          .describe("Number of days of history to fetch (default 30, max 365)"),
+          .describe(
+            "Number of days of history to fetch (default 30, max 1825 = ~5 years)",
+          ),
       }),
       execute: async ({ fundId, days }) => {
         try {
           const { data, error } = await supabase
             .from("mutual_fund_nav_history")
-            .select("nav_date, nav, offer_price, redemption_price")
+            .select("nav_date, nav_price")
             .eq("fund_id", fundId)
             .order("nav_date", { ascending: false })
             .limit(days ?? 30);
@@ -267,9 +427,7 @@ export function createFundsTools(supabase: SupabaseClient) {
             days: days ?? 30,
             history: (data || []).map((row: Record<string, unknown>) => ({
               date: row.nav_date,
-              nav: row.nav,
-              offerPrice: row.offer_price,
-              redemptionPrice: row.redemption_price,
+              navPrice: row.nav_price,
             })),
             total: (data || []).length,
           };

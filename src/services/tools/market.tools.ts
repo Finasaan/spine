@@ -314,10 +314,12 @@ export function createMarketTools(supabase: SupabaseClient) {
           .number()
           .int()
           .min(1)
-          .max(365)
+          .max(1825)
           .optional()
           .default(30)
-          .describe("Number of trading days of history (default 30, max 365)"),
+          .describe(
+            "Number of trading days of history (default 30, max 1825 = ~5 years)",
+          ),
       }),
       execute: async ({ symbol, days }) => {
         try {
