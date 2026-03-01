@@ -15,7 +15,7 @@ authRouter.post("/signup", signup);
 
 // Session
 authRouter.get("/me", authMiddleware, me);
-authRouter.post("/logout", authMiddleware, logout);
+authRouter.post("/logout", logout);
 
 // OAuth
 authRouter.get("/oauth/google", oauthGoogleRedirect);

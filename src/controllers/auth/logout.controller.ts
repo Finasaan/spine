@@ -6,27 +6,27 @@ const COOKIE_CLEAR = `${COOKIE_NAME}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0
 
 /**
  * POST /auth/logout
- * Invalidates the user's session server-side and clears the session cookie.
- * Requires a valid session (via cookie or Authorization header).
+ * Always clears the session cookie, regardless of whether the token is valid.
+ * Attempts to invalidate the session server-side if a token is present,
+ * but does not require a valid session — handles stale/deleted-account tokens.
  */
 export async function logout(c: AppContext) {
-    const token = c.get("token");
+    // Extract token directly (no authMiddleware — we must handle stale tokens)
+    const cookie = c.req.header("Cookie") ?? "";
+    const match = cookie.match(/(?:^|;\s*)sb-token=([^;]+)/);
+    const token = match?.[1] ?? null;
 
-    try {
-        const supabase = await getSupabaseAdminClient(c.env);
-
-        const { error } = await supabase.auth.admin.signOut(token);
-
-        if (error) {
-            console.error("Logout error:", error.message);
-            return c.json({ success: false, error: "Failed to sign out" }, 500);
+    // Best-effort server-side invalidation — ignore errors (token may be stale)
+    if (token) {
+        try {
+            const supabase = await getSupabaseAdminClient(c.env);
+            await supabase.auth.admin.signOut(token);
+        } catch {
+            // Silently ignore — the cookie will be cleared regardless
         }
-
-        c.header("Set-Cookie", COOKIE_CLEAR);
-
-        return c.json({ success: true, message: "Successfully signed out" });
-    } catch (err) {
-        console.error("Logout error:", err);
-        return c.json({ success: false, error: "Internal server error" }, 500);
     }
+
+    // Always clear the cookie
+    c.header("Set-Cookie", COOKIE_CLEAR);
+    return c.json({ success: true, message: "Successfully signed out" });
 }
