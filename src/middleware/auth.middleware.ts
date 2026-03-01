@@ -1,51 +1,51 @@
 import { createMiddleware } from "hono/factory";
+import { Context } from "hono";
 import { getSupabaseAdminClient } from "../db";
 import type { User } from "@supabase/supabase-js";
 
-// Extend the context to include the authenticated user
+// Extend the context to include the authenticated user and their token
 declare module "hono" {
   interface ContextVariableMap {
     user: User;
+    token: string;
   }
 }
 
 /**
- * Auth middleware - validates JWT token from Authorization header
- * Uses Supabase service role key to verify the token server-side
- * Attaches the user to the context for downstream handlers
+ * Extracts the bearer token from the request.
+ * Checks the Authorization header first, then falls back to the sb-token HttpOnly cookie.
+ */
+function extractToken(c: Context): string | null {
+  const authHeader = c.req.header("Authorization");
+  if (authHeader?.startsWith("Bearer ")) {
+    return authHeader.substring(7) || null;
+  }
+
+  const cookie = c.req.header("Cookie") ?? "";
+  const match = cookie.match(/(?:^|;\s*)sb-token=([^;]+)/);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Auth middleware - validates the JWT from the Authorization header or sb-token cookie.
+ * Uses the Supabase service role key to verify the token server-side.
+ * Attaches the validated user to the context for downstream handlers.
  */
 export const authMiddleware = createMiddleware<{
   Bindings: CloudflareBindings;
 }>(async (c, next) => {
-  const authHeader = c.req.header("Authorization");
-
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return c.json(
-      {
-        success: false,
-        error: "Unauthorized - Missing or invalid authorization header",
-      },
-      401
-    );
-  }
-
-  const token = authHeader.substring(7); // Remove "Bearer " prefix
+  const token = extractToken(c);
 
   if (!token) {
     return c.json(
-      {
-        success: false,
-        error: "Unauthorized - Invalid token",
-      },
+      { success: false, error: "Unauthorized - No valid token provided" },
       401
     );
   }
 
   try {
-    // Create admin client with service role key for JWT validation
     const supabase = await getSupabaseAdminClient(c.env);
 
-    // Validate the JWT and get user data
     const {
       data: { user },
       error,
@@ -54,56 +54,44 @@ export const authMiddleware = createMiddleware<{
     if (error || !user) {
       console.error("Token validation error:", error?.message);
       return c.json(
-        {
-          success: false,
-          error: "Unauthorized - Invalid or expired token",
-        },
+        { success: false, error: "Unauthorized - Invalid or expired token" },
         401
       );
     }
 
-    // Attach user to context for downstream handlers
     c.set("user", user);
-
+    c.set("token", token);
     await next();
   } catch (error) {
     console.error("Auth middleware error:", error);
     return c.json(
-      {
-        success: false,
-        error: "Internal server error during authentication",
-      },
+      { success: false, error: "Internal server error during authentication" },
       500
     );
   }
 });
 
 /**
- * Optional auth middleware - doesn't fail if no token, just continues
- * Attaches user to context if token is valid, otherwise continues without user
+ * Optional auth middleware - does not reject the request if no token is present.
+ * Attaches the user to context if a valid token is found; otherwise continues without one.
  */
 export const optionalAuthMiddleware = createMiddleware<{
   Bindings: CloudflareBindings;
 }>(async (c, next) => {
-  const authHeader = c.req.header("Authorization");
+  const token = extractToken(c);
 
-  if (authHeader && authHeader.startsWith("Bearer ")) {
-    const token = authHeader.substring(7);
+  if (token) {
+    try {
+      const supabase = await getSupabaseAdminClient(c.env);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser(token);
 
-    if (token) {
-      try {
-        const supabase = await getSupabaseAdminClient(c.env);
-        const {
-          data: { user },
-        } = await supabase.auth.getUser(token);
-
-        if (user) {
-          c.set("user", user);
-        }
-      } catch (error) {
-        // Silently continue without user
-        console.warn("Optional auth failed:", error);
+      if (user) {
+        c.set("user", user);
       }
+    } catch {
+      // Silently continue without user
     }
   }
 

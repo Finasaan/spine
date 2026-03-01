@@ -5,3 +5,5 @@ export { healthController } from "./health.controller";
 export { watchlistController } from "./watchlist.controller";
 export { portfolioController } from "./portfolio.controller";
 export { marketController } from "./market.controller";
+export { profileController } from "./profile.controller";
+export * from "./auth";
