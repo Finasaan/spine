@@ -6,3 +6,5 @@ export { healthRouter } from "./health.router";
 export { watchlistRouter } from "./watchlist.router";
 export { portfolioRouter } from "./portfolio.router";
 export { marketRouter } from "./market.router";
+export { authRouter } from "./auth/auth.router";
+export { profileRouter } from "./profile.router";

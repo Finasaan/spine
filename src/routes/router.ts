@@ -3,7 +3,7 @@ import { psxRouter } from "./psx.router";
 import { mfsRouter } from "./mfs.router";
 import { sectorsRouter } from "./sectors.router";
 import { healthRouter } from "./health.router";
-import { authRouter } from "./auth.router";
+import { authRouter } from "./auth/auth.router";
 import { profileRouter } from "./profile.router";
 import { chatbotRouter } from "./chatbot.router";
 import { watchlistRouter } from "./watchlist.router";
@@ -12,12 +12,12 @@ import { marketRouter } from "./market.router";
 import { insuranceRouter } from "./insurance.router";
 
 /**
- * Main Router - Registers all route modules
- * Routes are registered for both production and preview environments
+ * Main Router - Registers all route modules.
+ * Routes are registered for both production and preview environments.
  */
 const router = new Hono<{ Bindings: CloudflareBindings }>();
 
-// Production routes (at /api level)
+// Production routes
 router.route("/api", healthRouter);
 router.route("/api/auth", authRouter);
 router.route("/api/profile", profileRouter);
@@ -30,7 +30,7 @@ router.route("/api/portfolio", portfolioRouter);
 router.route("/api/market", marketRouter);
 router.route("/api/insurance", insuranceRouter);
 
-// Preview routes (at /api/preview level)
+// Preview routes
 router.route("/api/preview", healthRouter);
 router.route("/api/preview/auth", authRouter);
 router.route("/api/preview/profile", profileRouter);
