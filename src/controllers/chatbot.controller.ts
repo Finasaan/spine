@@ -17,6 +17,8 @@ import {
   addChatMessage,
   deleteChatSession,
   getChatHistory,
+  computeDocumentHash,
+  financialDocumentExists,
 } from "../services/chatbot.service";
 import {
   searchInsuranceChunks,
@@ -352,6 +354,20 @@ export async function handleIngestDocuments(
     const supabase = await getSupabaseClient(c.env);
     const ai = c.env.AI;
 
+    // Compute a hash over all chunk texts to deduplicate the document
+    const rawContent = body.chunks.map((chunk) => chunk.text).join("\n");
+    const documentHash = await computeDocumentHash(rawContent);
+
+    const alreadyExists = await financialDocumentExists(supabase, documentHash);
+    if (alreadyExists) {
+      return c.json({
+        success: true,
+        message: "Document already ingested (duplicate hash)",
+        skipped: true,
+        count: 0,
+      });
+    }
+
     // Extract texts for batch embedding
     const texts = body.chunks.map((chunk) => chunk.text);
 
@@ -369,7 +385,7 @@ export async function handleIngestDocuments(
     }));
 
     // Store in database
-    const count = await storeDocuments(supabase, documents);
+    const count = await storeDocuments(supabase, documents, documentHash);
 
     return c.json({
       success: true,
@@ -426,8 +442,28 @@ export async function handleUploadPDF(
     // Import PDF processing service
     const { processPDF } = await import("../services/pdf.service");
 
-    // Step 1: Extract text and chunk
+    // Hash the raw PDF bytes for deduplication (before any processing)
     const pdfBuffer = await file.arrayBuffer();
+    const documentHash = await computeDocumentHash(pdfBuffer);
+
+    const supabase = await getSupabaseClient(c.env);
+    const alreadyExists = await financialDocumentExists(supabase, documentHash);
+    if (alreadyExists) {
+      return c.json({
+        success: true,
+        message: "Document already ingested (duplicate hash)",
+        skipped: true,
+        statistics: {
+          filename: file.name,
+          company: company || "Not specified",
+          period: period || "Not specified",
+          chunks_created: 0,
+          documents_stored: 0,
+        },
+      });
+    }
+
+    // Step 1: Extract text and chunk
     const chunks = await processPDF(
       pdfBuffer,
       company || undefined,
@@ -436,7 +472,6 @@ export async function handleUploadPDF(
 
     console.log(`Extracted ${chunks.length} chunks from PDF`);
 
-    const supabase = await getSupabaseClient(c.env);
     const ai = c.env.AI;
 
     // Step 2: Generate embeddings in batch
@@ -454,7 +489,7 @@ export async function handleUploadPDF(
     }));
 
     // Step 4: Store in database
-    const count = await storeDocuments(supabase, documents);
+    const count = await storeDocuments(supabase, documents, documentHash);
 
     return c.json({
       success: true,
