@@ -40,6 +40,15 @@ Rules:
 - For insurance: always reference the specific policy/company from the knowledge base.
 - Cite your sources at the end of data-heavy responses.
 
+Tool usage strategy:
+- For "best performing", "top", or ranking questions: use queryMutualFunds or getTopStocks with appropriate sortBy (e.g. ytd, aum, value_traded) and sortOrder (desc for best/top).
+- For category-specific queries (equity funds, money market, Islamic): use the category filter on queryMutualFunds.
+- For sector-specific stock queries (banking stocks, cement sector): first call listSectors to find the sector ID, then use getTopStocks or searchCompanies with sectorId.
+- For performance trends or historical analysis: use getFundNavHistory or getStockHistory.
+- For insurance, financial literacy, or general knowledge questions: use searchKnowledge with the appropriate domain filter.
+- Chain multiple tools when needed — e.g., queryMutualFunds to find funds, then getFundNavHistory for detailed performance.
+- For comparison questions: retrieve data for all items being compared, then present in a markdown table.
+
 Today's date: ${new Date().toLocaleDateString("en-PK", { timeZone: "Asia/Karachi" })}`;
 
 // ============================================

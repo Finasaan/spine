@@ -12,7 +12,7 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
   return {
     searchKnowledge: tool({
       description:
-        "Search the Finasaan knowledge base for financial documents, company reports, insurance products, and mutual fund data. Input: query string.",
+        "Search the Finasaan knowledge base using semantic search. Use this for: insurance products/policies/comparisons, company annual reports, financial literacy topics, regulatory information, and any financial question not answerable by structured stock/fund data tools. This is the primary tool for insurance-related queries.",
       inputSchema: z.object({
         query: z.string().describe("Search query string"),
         domain: z
