@@ -1,0 +1,50 @@
+[
+  {
+    "id": "llama-3.1-8b-instant",
+    "name": "Llama 3.1 8B",
+    "provider": "groq",
+    "gatewayProvider": "groq",
+    "isPro": false,
+    "isEnabled": true,
+    "supportsToolCalling": true,
+    "contextWindow": 131072,
+    "maxOutputTokens": 8192,
+    "description": "Fast & lightweight"
+  },
+  {
+    "id": "llama-3.3-70b-versatile",
+    "name": "Llama 3.3 70B",
+    "provider": "groq",
+    "gatewayProvider": "groq",
+    "isPro": false,
+    "isEnabled": true,
+    "supportsToolCalling": true,
+    "contextWindow": 131072,
+    "maxOutputTokens": 32768,
+    "description": "Best quality / speed"
+  },
+  {
+    "id": "openai/gpt-oss-120b",
+    "name": "GPT OSS 120B",
+    "provider": "openai",
+    "gatewayProvider": "groq",
+    "isPro": true,
+    "isEnabled": true,
+    "supportsToolCalling": true,
+    "contextWindow": 128000,
+    "maxOutputTokens": 8000,
+    "description": "Most powerful"
+  },
+  {
+    "id": "openai/gpt-oss-20b",
+    "name": "GPT OSS 20B",
+    "provider": "openai",
+    "gatewayProvider": "groq",
+    "isPro": false,
+    "isEnabled": true,
+    "supportsToolCalling": true,
+    "contextWindow": 128000,
+    "maxOutputTokens": 8000,
+    "description": "Balanced & capable"
+  }
+]

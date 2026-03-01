@@ -65,6 +65,11 @@
     }
   },
 
+  // Non-secret vars — override locally via .dev.vars, set in CF dashboard for production
+  "vars": {
+    "AI_GATEWAY_BASE_URL": ""
+  },
+
   // dev configuration
   "dev": {
     "port": 8787,

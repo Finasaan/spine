@@ -1,85 +1,17 @@
 /**
- * Chatbot Service
- * Core RAG functionality using Cloudflare Workers AI and AI Gateway
+ * Chatbot Service — FinasaanGPT v2
+ * Session management, message persistence, and document upload helpers.
+ * LLM / streaming logic lives in chatbot.controller.ts.
  */
 
 import { SupabaseClient } from "@supabase/supabase-js";
-import {
-  StoredDocument,
-  ChatMessage,
-  ChatSource,
-  AI_GATEWAY_CONFIG,
-  SYSTEM_PROMPT,
-  GroqModelId,
-  DEFAULT_MODEL,
-} from "../types/chatbot.types";
+import { generateEmbedding, generateEmbeddings } from "./ai.service";
+import type { ChatSession, ChatMessageRecord } from "../types/chatbot.types";
 
 // ============================================
-// Embedding Generation
+// Hash Utility
 // ============================================
 
-// Type for the embedding response
-interface EmbeddingResponse {
-  data?: number[][];
-  shape?: number[];
-}
-
-/**
- * Generate embeddings using Cloudflare Workers AI
- * Uses @cf/baai/bge-large-en-v1.5 which produces 1024-dim vectors
- */
-export async function generateEmbedding(
-  ai: Ai,
-  text: string
-): Promise<number[]> {
-  const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
-    text: [text],
-  })) as EmbeddingResponse;
-
-  // Workers AI returns { data: [[...embedding]] } for text embeddings
-  if (!response.data || !response.data[0]) {
-    throw new Error("Failed to generate embedding");
-  }
-
-  return response.data[0];
-}
-
-/**
- * Generate embeddings for multiple texts
- */
-export async function generateEmbeddings(
-  ai: Ai,
-  texts: string[]
-): Promise<number[][]> {
-  try {
-    const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
-      text: texts,
-    })) as EmbeddingResponse;
-
-    if (!response.data) {
-      throw new Error("Failed to generate embeddings - no data returned");
-    }
-
-    return response.data;
-  } catch (error) {
-    // Check for Cloudflare AI upstream errors (common in local dev)
-    if (error instanceof Error && error.message.includes("1031")) {
-      throw new Error(
-        "Workers AI not available in local dev. Run with: wrangler dev --remote"
-      );
-    }
-    throw error;
-  }
-}
-
-// ============================================
-// Document Storage & Retrieval
-// ============================================
-
-/**
- * Compute SHA-256 hash of a string or ArrayBuffer.
- * Used to deduplicate financial documents before embedding.
- */
 export async function computeDocumentHash(
   content: string | ArrayBuffer
 ): Promise<string> {
@@ -93,264 +25,101 @@ export async function computeDocumentHash(
     .join("");
 }
 
-/**
- * Check if a financial document with the given hash already exists
- * in chatbot_documents. Returns true if already ingested.
- */
-export async function financialDocumentExists(
-  supabase: SupabaseClient,
-  documentHash: string
-): Promise<boolean> {
-  const { data, error } = await supabase
-    .from("chatbot_documents")
-    .select("id")
-    .eq("document_hash", documentHash)
-    .limit(1);
-
-  if (error) {
-    console.warn(`[Chatbot] Hash check error: ${error.message}`);
-    return false; // Proceed with ingestion on error
-  }
-
-  return (data?.length || 0) > 0;
-}
-
-/**
- * Store document chunks with embeddings in Supabase
- */
-export async function storeDocuments(
-  supabase: SupabaseClient,
-  documents: Array<{
-    content: string;
-    embedding: number[];
-    metadata?: Record<string, unknown>;
-    company?: string;
-    period?: string;
-    content_type?: string;
-  }>,
-  documentHash?: string
-): Promise<number> {
-  const { data, error } = await supabase
-    .from("chatbot_documents")
-    .insert(
-      documents.map((doc) => ({
-        content: doc.content,
-        embedding: JSON.stringify(doc.embedding),
-        metadata: doc.metadata || {},
-        company: doc.company || null,
-        period: doc.period || null,
-        content_type: doc.content_type || "text_chunk",
-        document_hash: documentHash || null,
-      }))
-    )
-    .select("id");
-
-  if (error) {
-    throw new Error(`Failed to store documents: ${error.message}`);
-  }
-
-  return data?.length || 0;
-}
-
-/**
- * Search for similar documents using pgvector
- */
-export async function searchSimilarDocuments(
-  supabase: SupabaseClient,
-  queryEmbedding: number[],
-  options: {
-    limit?: number;
-    company?: string;
-    period?: string;
-    content_type?: string;
-    min_similarity?: number;
-  } = {}
-): Promise<StoredDocument[]> {
-  const {
-    limit = 5,
-    company,
-    period,
-    content_type,
-    min_similarity = 0.5,
-  } = options;
-
-  const { data, error } = await supabase.rpc("search_chatbot_documents", {
-    query_embedding: JSON.stringify(queryEmbedding),
-    match_limit: limit,
-    filter_company: company || null,
-    filter_period: period || null,
-    filter_content_type: content_type || null,
-  });
-
-  if (error) {
-    throw new Error(`Search failed: ${error.message}`);
-  }
-
-  // Filter by minimum similarity
-  return (data || []).filter(
-    (doc: StoredDocument) => (doc.similarity || 0) >= min_similarity
-  );
-}
-
 // ============================================
-// Chat Completion via AI Gateway
+// Session Management
 // ============================================
 
 /**
- * Format retrieved documents into context string
+ * Get an existing session (verifying it belongs to the user),
+ * or create a new one if sessionId is null.
  */
-function formatContext(documents: StoredDocument[]): string {
-  if (!documents.length) {
-    return "No relevant context found.";
-  }
+export async function getOrCreateSession(
+  supabase: SupabaseClient,
+  userId: string,
+  sessionId: string | null,
+  title: string,
+  modelId: string
+): Promise<ChatSession> {
+  if (sessionId) {
+    const { data, error } = await supabase
+      .from("chat_sessions")
+      .select("*")
+      .eq("id", sessionId)
+      .eq("user_id", userId)
+      .single();
 
-  return documents
-    .map((doc, i) => {
-      const company = doc.company || "Unknown";
-      const period = doc.period || "Unknown";
-      const contentType = doc.content_type || "text";
-      const similarity = doc.similarity?.toFixed(2) || "N/A";
-
-      return `[Document ${i + 1
-        }] (Company: ${company}, Period: ${period}, Type: ${contentType}, Relevance: ${similarity})
-${doc.content}`;
-    })
-    .join("\n\n---\n\n");
-}
-
-/**
- * Generate chat response using AI Gateway with Groq
- */
-export async function generateChatResponse(
-  apiKey: string,
-  messages: ChatMessage[],
-  context: StoredDocument[],
-  userQuery: string,
-  model: GroqModelId = DEFAULT_MODEL
-): Promise<string> {
-  const contextStr = formatContext(context);
-  const systemPrompt = SYSTEM_PROMPT.replace("{context}", contextStr);
-
-  // Build messages array for chat completion
-  const chatMessages = [
-    { role: "system", content: systemPrompt },
-    ...messages.slice(-10).map((m) => ({
-      role: m.role,
-      content: m.content,
-    })),
-    { role: "user", content: userQuery },
-  ];
-
-  const response = await fetch(
-    `${AI_GATEWAY_CONFIG.baseUrl}/chat/completions`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "cf-aig-authorization": `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: `groq/${model}`,
-        messages: chatMessages,
-        temperature: 0.7,
-        max_tokens: 4096,
-        top_p: 0.9,
-      }),
+    if (error || !data) {
+      throw new Error(`Session ${sessionId} not found or access denied`);
     }
-  );
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`AI Gateway error: ${response.status} - ${errorText}`);
+    return data as unknown as ChatSession;
   }
 
-  const result = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    error?: { message?: string };
-  };
-
-  if (result.error) {
-    throw new Error(`AI error: ${result.error.message}`);
-  }
-
-  const answer = result.choices?.[0]?.message?.content;
-  if (!answer) {
-    throw new Error("No response generated");
-  }
-
-  return answer.trim();
-}
-
-// ============================================
-// Chat Session Management
-// ============================================
-
-/**
- * Create a new chat session
- */
-export async function createChatSession(
-  supabase: SupabaseClient,
-  title: string
-): Promise<string> {
+  // Create new session
   const { data, error } = await supabase
     .from("chat_sessions")
-    .insert({ title })
-    .select("id")
+    .insert({
+      title: title.length > 60 ? title.substring(0, 57) + "..." : title,
+      user_id: userId,
+      model: modelId,
+    })
+    .select()
     .single();
 
-  if (error) {
-    throw new Error(`Failed to create session: ${error.message}`);
+  if (error || !data) {
+    throw new Error(`Failed to create session: ${error?.message}`);
   }
 
-  return data.id;
+  return data as unknown as ChatSession;
 }
 
 /**
- * Get a chat session with messages
+ * Persist user and assistant messages after a stream completes.
  */
-export async function getChatSession(
+export async function persistMessages(
   supabase: SupabaseClient,
-  sessionId: string
-): Promise<{
-  id: string;
-  title: string;
-  messages: ChatMessage[];
-  created_at: string;
-  updated_at: string;
-} | null> {
-  const { data: session, error: sessionError } = await supabase
+  sessionId: string,
+  userContent: string,
+  assistantContent: string,
+  metadata: Record<string, unknown> = {}
+): Promise<void> {
+  const now = new Date().toISOString();
+
+  await supabase.from("chat_messages").insert([
+    {
+      session_id: sessionId,
+      role: "user",
+      content: userContent,
+      metadata: {},
+      created_at: now,
+    },
+    {
+      session_id: sessionId,
+      role: "assistant",
+      content: assistantContent,
+      metadata,
+      created_at: new Date(Date.now() + 1).toISOString(),
+    },
+  ]);
+
+  // Update session's updated_at
+  await supabase
     .from("chat_sessions")
-    .select("*")
-    .eq("id", sessionId)
-    .single();
-
-  if (sessionError || !session) {
-    return null;
-  }
-
-  const { data: messages, error: messagesError } = await supabase
-    .from("chat_messages")
-    .select("*")
-    .eq("session_id", sessionId)
-    .order("created_at", { ascending: true });
-
-  if (messagesError) {
-    throw new Error(`Failed to get messages: ${messagesError.message}`);
-  }
-
-  return {
-    ...session,
-    messages: messages || [],
-  };
+    .update({ updated_at: now })
+    .eq("id", sessionId);
 }
 
 /**
- * Get all chat sessions
+ * Get all sessions for a user (ordered newest first).
  */
-export async function getAllChatSessions(supabase: SupabaseClient): Promise<
+export async function getUserSessions(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<
   Array<{
     id: string;
     title: string;
+    model: string | null;
     created_at: string;
     updated_at: string;
     message_count: number;
@@ -360,99 +129,183 @@ export async function getAllChatSessions(supabase: SupabaseClient): Promise<
     .from("chat_sessions")
     .select(
       `
-      id,
-      title,
-      created_at,
-      updated_at,
+      id, title, model, created_at, updated_at,
       chat_messages(count)
     `
     )
-    .order("updated_at", { ascending: false });
+    .eq("user_id", userId)
+    .order("updated_at", { ascending: false })
+    .limit(50);
 
   if (error) {
     throw new Error(`Failed to get sessions: ${error.message}`);
   }
 
-  return (data || []).map((session) => ({
-    id: session.id,
-    title: session.title,
-    created_at: session.created_at,
-    updated_at: session.updated_at,
+  return (data || []).map((s: Record<string, unknown>) => ({
+    id: s.id as string,
+    title: s.title as string,
+    model: s.model as string | null,
+    created_at: s.created_at as string,
+    updated_at: s.updated_at as string,
     message_count:
-      (session.chat_messages as unknown as Array<{ count: number }>)?.[0]
-        ?.count || 0,
+      (s.chat_messages as unknown as Array<{ count: number }>)?.[0]?.count ||
+      0,
   }));
 }
 
 /**
- * Add a message to a chat session
+ * Get a session's messages for a specific user.
  */
-export async function addChatMessage(
+export async function getSessionMessages(
   supabase: SupabaseClient,
   sessionId: string,
-  message: {
-    role: "user" | "assistant";
-    content: string;
-    sources?: ChatSource[];
-    model?: string;
-  }
-): Promise<number> {
-  const { data, error } = await supabase
-    .from("chat_messages")
-    .insert({
-      session_id: sessionId,
-      role: message.role,
-      content: message.content,
-      sources: message.sources || [],
-      model: message.model,
-    })
-    .select("id")
+  userId: string
+): Promise<{ session: ChatSession; messages: ChatMessageRecord[] } | null> {
+  const { data: session, error: sErr } = await supabase
+    .from("chat_sessions")
+    .select("*")
+    .eq("id", sessionId)
+    .eq("user_id", userId)
     .single();
 
-  if (error) {
-    throw new Error(`Failed to add message: ${error.message}`);
-  }
+  if (sErr || !session) return null;
 
-  return data.id;
+  const { data: messages, error: mErr } = await supabase
+    .from("chat_messages")
+    .select("*")
+    .eq("session_id", sessionId)
+    .order("created_at", { ascending: true });
+
+  if (mErr) throw new Error(`Failed to get messages: ${mErr.message}`);
+
+  return {
+    session: session as unknown as ChatSession,
+    messages: (messages || []) as unknown as ChatMessageRecord[],
+  };
 }
 
 /**
- * Delete a chat session
+ * Delete a session (and cascade-delete its messages and conversation chunks).
  */
-export async function deleteChatSession(
+export async function deleteSession(
   supabase: SupabaseClient,
-  sessionId: string
-): Promise<boolean> {
+  sessionId: string,
+  userId: string
+): Promise<void> {
   const { error } = await supabase
     .from("chat_sessions")
     .delete()
-    .eq("id", sessionId);
+    .eq("id", sessionId)
+    .eq("user_id", userId);
 
-  if (error) {
-    throw new Error(`Failed to delete session: ${error.message}`);
+  if (error) throw new Error(`Failed to delete session: ${error.message}`);
+}
+
+// ============================================
+// Conversation Document Upload
+// ============================================
+
+/**
+ * Extract text from a PDF file, chunk it, embed chunks, and store
+ * in conversation_document_chunks (scoped to session + user).
+ * The actual file bytes are never stored.
+ */
+export async function uploadConversationDocument(
+  supabase: SupabaseClient,
+  ai: Ai,
+  sessionId: string,
+  userId: string,
+  file: File
+): Promise<{ filename: string; chunksCreated: number }> {
+  // Validate file
+  if (!file.name.toLowerCase().endsWith(".pdf")) {
+    throw new Error("Only PDF files are supported");
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    throw new Error("File too large — maximum 10MB");
   }
 
-  return true;
+  // Extract text
+  const pdfBuffer = await file.arrayBuffer();
+  const { processPDF } = await import("./pdf.service");
+  const chunks = await processPDF(pdfBuffer);
+
+  if (chunks.length === 0) {
+    throw new Error("No text content extracted from PDF");
+  }
+
+  // Generate embeddings in batch
+  const texts = chunks.map((c) => c.text);
+  const embeddings = await generateEmbeddings(ai, texts);
+
+  // Store chunks
+  const records = chunks.map((chunk, i) => ({
+    session_id: sessionId,
+    user_id: userId,
+    filename: file.name,
+    chunk_index: chunk.metadata.chunk_index,
+    content: chunk.text,
+    embedding: JSON.stringify(embeddings[i]),
+  }));
+
+  const { error } = await supabase
+    .from("conversation_document_chunks")
+    .insert(records);
+
+  if (error) {
+    throw new Error(`Failed to store document chunks: ${error.message}`);
+  }
+
+  return { filename: file.name, chunksCreated: chunks.length };
+}
+
+// ============================================
+// Knowledge Base Document Storage (legacy upload endpoint)
+// ============================================
+
+/**
+ * Check if a document with the given hash already exists in finasaan_documents.
+ */
+export async function documentExists(
+  supabase: SupabaseClient,
+  documentHash: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("finasaan_documents")
+    .select("id")
+    .eq("document_hash", documentHash)
+    .limit(1);
+
+  if (error) return false;
+  return (data?.length || 0) > 0;
 }
 
 /**
- * Get chat history for context
+ * Store document chunks into the unified finasaan_documents table.
  */
-export async function getChatHistory(
+export async function storeKnowledgeDocuments(
   supabase: SupabaseClient,
-  sessionId: string,
-  limit: number = 10
-): Promise<ChatMessage[]> {
+  documents: Array<{
+    content: string;
+    embedding: number[];
+    domain: string;
+    metadata?: Record<string, unknown>;
+    documentHash?: string;
+  }>
+): Promise<number> {
   const { data, error } = await supabase
-    .from("chat_messages")
-    .select("role, content")
-    .eq("session_id", sessionId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
+    .from("finasaan_documents")
+    .insert(
+      documents.map((doc) => ({
+        domain: doc.domain,
+        content: doc.content,
+        embedding: JSON.stringify(doc.embedding),
+        metadata: doc.metadata || {},
+        document_hash: doc.documentHash || null,
+      }))
+    )
+    .select("id");
 
-  if (error) {
-    return [];
-  }
-
-  return (data || []).reverse();
+  if (error) throw new Error(`Failed to store documents: ${error.message}`);
+  return data?.length || 0;
 }

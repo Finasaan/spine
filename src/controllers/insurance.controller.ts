@@ -9,7 +9,7 @@ import { getSupabaseClient } from "../db";
 import {
   generateEmbedding,
   generateEmbeddings,
-} from "../services/chatbot.service";
+} from "../services/ai.service";
 import {
   insuranceDocumentExists,
   storeInsuranceDocument,

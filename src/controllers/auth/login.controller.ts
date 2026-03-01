@@ -2,12 +2,13 @@ import { getSupabaseClient } from "../../db";
 import type { AppContext } from "../../types";
 
 const COOKIE_NAME = "sb-token";
+const REFRESH_COOKIE_NAME = "sb-refresh-token";
 const COOKIE_OPTIONS = "HttpOnly; Path=/; SameSite=Lax; Max-Age=604800"; // 7 days
 
 /**
  * POST /auth/login
  * Authenticates a user with email and password.
- * Sets an HttpOnly session cookie on success.
+ * Sets HttpOnly session cookies (access + refresh) on success.
  */
 export async function login(c: AppContext) {
     const body = await c.req.json<{ email: string; password: string }>();
@@ -31,6 +32,11 @@ export async function login(c: AppContext) {
     c.header(
         "Set-Cookie",
         `${COOKIE_NAME}=${session.access_token}${secure}; ${COOKIE_OPTIONS}`
+    );
+    c.header(
+        "Set-Cookie",
+        `${REFRESH_COOKIE_NAME}=${session.refresh_token}${secure}; ${COOKIE_OPTIONS}`,
+        { append: true }
     );
 
     return c.json({

@@ -1,6 +1,8 @@
 import type { AppContext } from "../../types";
+import { getSupabaseAdminClient } from "../../db";
 
 const COOKIE_NAME = "sb-token";
+const REFRESH_COOKIE_NAME = "sb-refresh-token";
 const PKCE_COOKIE_NAME = "sb-pkce-verifier";
 const COOKIE_OPTIONS = "HttpOnly; Path=/; SameSite=Lax; Max-Age=604800"; // 7 days
 const PKCE_COOKIE_OPTIONS = "HttpOnly; Path=/; SameSite=Lax; Max-Age=300"; // 5 minutes
@@ -73,13 +75,15 @@ export async function oauthGoogleRedirect(c: AppContext) {
  *
  * 1. Reads the PKCE code_verifier from the sb-pkce-verifier HttpOnly cookie.
  * 2. POSTs to GoTrue /auth/v1/token?grant_type=pkce with the code + verifier.
- * 3. Sets the sb-token HttpOnly cookie with the access_token.
+ * 3. Sets sb-token (access_token) and sb-refresh-token (refresh_token) cookies.
  * 4. Clears the sb-pkce-verifier cookie.
- * 5. Redirects the browser to origin + next (e.g. /onboarding).
+ * 5. Checks if the user already has a profile — redirects to /dashboard if so,
+ *    /onboarding if this is their first login.
  */
 export async function oauthCallback(c: AppContext) {
     const code = c.req.query("code");
-    const next = c.req.query("next") ?? "/onboarding";
+    // We determine the real next destination ourselves — ignore any passed `next`
+    // to prevent the hardcoded /onboarding from always winning.
     const origin = c.req.query("origin") ?? "";
 
     if (!code) {
@@ -99,7 +103,7 @@ export async function oauthCallback(c: AppContext) {
     const supabaseUrl = c.env.SUPABASE_URL ?? "";
     const supabaseKey = c.env.SUPABASE_KEY ?? "";
 
-    // Exchange the GoTrue auth code + verifier for an access_token.
+    // Exchange the GoTrue auth code + verifier for tokens.
     const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=pkce`, {
         method: "POST",
         headers: {
@@ -118,14 +122,37 @@ export async function oauthCallback(c: AppContext) {
         return c.redirect(`${origin}/login?error=auth_failed`);
     }
 
-    const session = await tokenRes.json() as { access_token: string };
+    const session = await tokenRes.json() as {
+        access_token: string;
+        refresh_token: string;
+        user: { id: string };
+    };
 
     const secure = c.req.url.startsWith("https") ? "; Secure" : "";
 
-    // Set both cookies — use append:true on the second so Hono doesn't
-    // overwrite the first Set-Cookie header.
+    // Set access token cookie
     c.header("Set-Cookie", `${COOKIE_NAME}=${session.access_token}${secure}; ${COOKIE_OPTIONS}`);
+    // Set refresh token cookie (also HttpOnly, same 7-day lifetime)
+    c.header("Set-Cookie", `${REFRESH_COOKIE_NAME}=${session.refresh_token}${secure}; ${COOKIE_OPTIONS}`, { append: true });
+    // Clear PKCE verifier cookie
     c.header("Set-Cookie", `${PKCE_COOKIE_NAME}=; Path=/; Max-Age=0`, { append: true });
+
+    // Determine redirect destination: /dashboard for returning users, /onboarding for new ones.
+    let next = "/onboarding";
+    try {
+        const supabase = await getSupabaseAdminClient(c.env);
+        const { data } = await supabase
+            .from("user_profiles")
+            .select("id")
+            .eq("id", session.user.id)
+            .maybeSingle();
+        if (data) {
+            next = "/dashboard";
+        }
+    } catch (err) {
+        // If the profile check fails, default to onboarding (safe fallback)
+        console.error("OAuth callback: profile check failed", err);
+    }
 
     return c.redirect(`${origin}${next}`);
 }

@@ -1,52 +1,43 @@
 /**
- * Chatbot Router
- * Public routes for chatbot functionality (no auth required)
+ * Chatbot Router — FinasaanGPT v2
+ * All routes require authentication via authMiddleware.
  */
 
 import { Hono } from "hono";
+import { authMiddleware } from "../middleware/auth.middleware";
 import {
-  handleChat,
-  handleIngestDocuments,
-  handleUploadPDF,
-  handleGetChats,
-  handleGetChat,
-  handleDeleteChat,
+  handleStream,
+  handleUploadAttachment,
   handleGetModels,
+  handleGetSessions,
+  handleGetSession,
+  handleDeleteSession,
 } from "../controllers/chatbot.controller";
 
 const chatbotRouter = new Hono<{ Bindings: CloudflareBindings }>();
 
 // ============================================
-// Chat Routes
+// Public Routes
 // ============================================
 
-// Send chat message and get AI response with RAG
-chatbotRouter.post("/chat", handleChat);
-
-// Get available models
+// Available models (no auth needed — used on the login page / marketing)
 chatbotRouter.get("/models", handleGetModels);
 
 // ============================================
-// Document Routes
+// Authenticated Routes
 // ============================================
 
-// Upload PDF document for RAG (multipart/form-data)
-chatbotRouter.post("/documents/upload", handleUploadPDF);
+chatbotRouter.use("/*", authMiddleware);
 
-// Ingest document chunks for RAG (JSON)
-chatbotRouter.post("/documents", handleIngestDocuments);
+// Main streaming endpoint
+chatbotRouter.post("/stream", handleStream);
 
-// ============================================
-// Chat Session Routes
-// ============================================
+// Conversation-scoped PDF attachment upload
+chatbotRouter.post("/upload-attachment", handleUploadAttachment);
 
-// Get all chat sessions
-chatbotRouter.get("/chats", handleGetChats);
-
-// Get a specific chat session with messages
-chatbotRouter.get("/chats/:id", handleGetChat);
-
-// Delete a chat session
-chatbotRouter.delete("/chats/:id", handleDeleteChat);
+// Session management
+chatbotRouter.get("/sessions", handleGetSessions);
+chatbotRouter.get("/sessions/:id", handleGetSession);
+chatbotRouter.delete("/sessions/:id", handleDeleteSession);
 
 export { chatbotRouter };
