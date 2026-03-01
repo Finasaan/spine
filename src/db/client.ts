@@ -83,7 +83,13 @@ export async function getSupabaseClient(env: {
 }) {
   const config = await getSupabaseConfig(env);
   console.log("Using Supabase URL:", config.url);
-  return createClient(config.url, config.key);
+  return createClient(config.url, config.key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+  });
 }
 
 /**
