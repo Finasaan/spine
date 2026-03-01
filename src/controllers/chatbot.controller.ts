@@ -1,6 +1,7 @@
 /**
  * Chatbot Controller
  * Handles HTTP requests for chatbot endpoints
+ * Routes between insurance and stocks knowledge bases
  */
 
 import { Context } from "hono";
@@ -10,7 +11,6 @@ import {
   generateEmbeddings,
   storeDocuments,
   searchSimilarDocuments,
-  generateChatResponse,
   createChatSession,
   getChatSession,
   getAllChatSessions,
@@ -19,12 +19,21 @@ import {
   getChatHistory,
 } from "../services/chatbot.service";
 import {
+  searchInsuranceChunks,
+} from "../services/insurance.service";
+import {
   ChatRequest,
   IngestRequest,
   GroqModelId,
   DEFAULT_MODEL,
   GROQ_MODELS,
   ChatSource,
+  ChatDomain,
+  STOCKS_SYSTEM_PROMPT,
+  INSURANCE_SYSTEM_PROMPT,
+  AI_GATEWAY_CONFIG,
+  detectQueryDomain,
+  buildBudgetedMessages,
 } from "../types/chatbot.types";
 
 // ============================================
@@ -48,6 +57,9 @@ function getAIGatewayToken(c: Context<{ Bindings: CloudflareBindings }>) {
 /**
  * Handle chat request with RAG
  * POST /api/chatbot/chat
+ *
+ * Automatically detects whether the query is about insurance or stocks
+ * and routes to the appropriate knowledge base
  */
 export async function handleChat(c: Context<{ Bindings: CloudflareBindings }>) {
   try {
@@ -67,6 +79,14 @@ export async function handleChat(c: Context<{ Bindings: CloudflareBindings }>) {
     const aiGatewayToken = getAIGatewayToken(c);
     const ai = c.env.AI;
 
+    // Determine domain: explicit from request, or auto-detect from query
+    const domain: ChatDomain =
+      body.domain && body.domain !== "auto"
+        ? body.domain
+        : detectQueryDomain(query);
+
+    console.log(`[Chat] Domain: ${domain} | Query: ${query.substring(0, 80)}`);
+
     // Get or create chat session
     let chatId = body.chat_id;
     if (!chatId) {
@@ -83,51 +103,193 @@ export async function handleChat(c: Context<{ Bindings: CloudflareBindings }>) {
     // Step 1: Generate query embedding
     const queryEmbedding = await generateEmbedding(ai, query);
 
-    // Step 2: Search for relevant documents
-    const relevantDocs = await searchSimilarDocuments(
-      supabase,
-      queryEmbedding,
-      {
-        limit: topK,
-        company: body.company,
-        period: body.period,
-        min_similarity: 0.5,
-      }
-    );
-
+    // Step 2: Search the appropriate knowledge base
     let answer: string;
     let sources: ChatSource[] = [];
+    let chunksRetrieved = 0;
 
-    if (relevantDocs.length === 0) {
-      answer =
-        "I couldn't find any relevant information in the documents to answer your question.";
-    } else {
-      // Step 3: Get chat history for context
-      const history = await getChatHistory(supabase, chatId);
-
-      // Step 4: Generate response using AI Gateway
-      answer = await generateChatResponse(
-        aiGatewayToken,
-        history,
-        relevantDocs,
-        query,
-        model
+    if (domain === "insurance") {
+      // --- Insurance domain ---
+      const insuranceResults = await searchInsuranceChunks(
+        supabase,
+        queryEmbedding,
+        {
+          limit: topK,
+          company_id: body.company,
+          min_similarity: 0.5,
+        }
       );
 
-      // Prepare sources
-      sources = relevantDocs.map((doc) => ({
-        company: doc.company || undefined,
-        period: doc.period || undefined,
-        content_type: doc.content_type || undefined,
-        similarity: Math.round((doc.similarity || 0) * 1000) / 1000,
-        snippet:
-          doc.content.length > 200
-            ? doc.content.substring(0, 200) + "..."
-            : doc.content,
-      }));
+      chunksRetrieved = insuranceResults.length;
+
+      if (insuranceResults.length === 0) {
+        answer =
+          "I couldn't find any relevant insurance information in the documents to answer your question. Try rephrasing or ask about a specific insurance company or product.";
+      } else {
+        // Get chat history
+        const history = await getChatHistory(supabase, chatId);
+
+        // Format each chunk as a labeled context block (already sorted by relevance)
+        const contextChunks = insuranceResults.map((r, i) => {
+          const company = r.company_id || "Unknown";
+          const chunkType = r.chunk_type || "body";
+          const similarity = r.similarity?.toFixed(2) || "N/A";
+          return `[Insurance Document ${i + 1}] (Company: ${company}, Type: ${chunkType}, Relevance: ${similarity})\n${r.text}`;
+        });
+
+        // Build token-budgeted messages — drops chunks/history that don't fit
+        const { messages: chatMessages, maxResponseTokens } = buildBudgetedMessages({
+          systemPromptTemplate: INSURANCE_SYSTEM_PROMPT,
+          contextChunks,
+          history: history.slice(-10).map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          userQuery: query,
+          model,
+        });
+
+        // Generate response via AI Gateway
+        const response = await fetch(
+          `${AI_GATEWAY_CONFIG.baseUrl}/chat/completions`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "cf-aig-authorization": `Bearer ${aiGatewayToken}`,
+            },
+            body: JSON.stringify({
+              model: `groq/${model}`,
+              messages: chatMessages,
+              temperature: 0.7,
+              max_tokens: maxResponseTokens,
+              top_p: 0.9,
+            }),
+          }
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            `AI Gateway error: ${response.status} - ${errorText}`
+          );
+        }
+
+        const result = (await response.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+          error?: { message?: string };
+        };
+
+        if (result.error) {
+          throw new Error(`AI error: ${result.error.message}`);
+        }
+
+        answer = result.choices?.[0]?.message?.content?.trim() || "";
+        if (!answer) throw new Error("No response generated");
+
+        // Prepare sources from insurance results
+        sources = insuranceResults.map((r) => ({
+          company: r.company_id || undefined,
+          content_type: r.chunk_type || undefined,
+          similarity: Math.round((r.similarity || 0) * 1000) / 1000,
+          snippet:
+            r.text.length > 200 ? r.text.substring(0, 200) + "..." : r.text,
+        }));
+      }
+    } else {
+      // --- Stocks domain (existing behavior) ---
+      const relevantDocs = await searchSimilarDocuments(
+        supabase,
+        queryEmbedding,
+        {
+          limit: topK,
+          company: body.company,
+          period: body.period,
+          min_similarity: 0.5,
+        }
+      );
+
+      chunksRetrieved = relevantDocs.length;
+
+      if (relevantDocs.length === 0) {
+        answer =
+          "I couldn't find any relevant information in the documents to answer your question.";
+      } else {
+        const history = await getChatHistory(supabase, chatId);
+
+        // Format each doc as a labeled context block
+        const contextChunks = relevantDocs.map((doc, i) => {
+          const company = doc.company || "Unknown";
+          const period = doc.period || "Unknown";
+          const contentType = doc.content_type || "text";
+          const similarity = doc.similarity?.toFixed(2) || "N/A";
+          return `[Document ${i + 1}] (Company: ${company}, Period: ${period}, Type: ${contentType}, Relevance: ${similarity})\n${doc.content}`;
+        });
+
+        // Build token-budgeted messages
+        const { messages: chatMessages, maxResponseTokens } = buildBudgetedMessages({
+          systemPromptTemplate: STOCKS_SYSTEM_PROMPT,
+          contextChunks,
+          history: history.slice(-10).map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          userQuery: query,
+          model,
+        });
+
+        // Generate response via AI Gateway
+        const gatewayResponse = await fetch(
+          `${AI_GATEWAY_CONFIG.baseUrl}/chat/completions`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "cf-aig-authorization": `Bearer ${aiGatewayToken}`,
+            },
+            body: JSON.stringify({
+              model: `groq/${model}`,
+              messages: chatMessages,
+              temperature: 0.7,
+              max_tokens: maxResponseTokens,
+              top_p: 0.9,
+            }),
+          }
+        );
+
+        if (!gatewayResponse.ok) {
+          const errorText = await gatewayResponse.text();
+          throw new Error(
+            `AI Gateway error: ${gatewayResponse.status} - ${errorText}`
+          );
+        }
+
+        const result = (await gatewayResponse.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+          error?: { message?: string };
+        };
+
+        if (result.error) {
+          throw new Error(`AI error: ${result.error.message}`);
+        }
+
+        answer = result.choices?.[0]?.message?.content?.trim() || "";
+        if (!answer) throw new Error("No response generated");
+
+        sources = relevantDocs.map((doc) => ({
+          company: doc.company || undefined,
+          period: doc.period || undefined,
+          content_type: doc.content_type || undefined,
+          similarity: Math.round((doc.similarity || 0) * 1000) / 1000,
+          snippet:
+            doc.content.length > 200
+              ? doc.content.substring(0, 200) + "..."
+              : doc.content,
+        }));
+      }
     }
 
-    // Step 5: Save messages to database
+    // Step 3: Save messages to database
     await addChatMessage(supabase, chatId, {
       role: "user",
       content: query,
@@ -144,8 +306,9 @@ export async function handleChat(c: Context<{ Bindings: CloudflareBindings }>) {
       answer,
       sources,
       metadata: {
-        chunks_retrieved: relevantDocs.length,
+        chunks_retrieved: chunksRetrieved,
         model,
+        domain,
         filters_applied: {
           company: body.company,
           period: body.period,

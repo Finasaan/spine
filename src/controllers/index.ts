@@ -4,3 +4,4 @@ export { sectorsController } from "./sectors.controller";
 export { healthController } from "./health.controller";
 export { watchlistController } from "./watchlist.controller";
 export { portfolioController } from "./portfolio.controller";
+export { marketController } from "./market.controller";
