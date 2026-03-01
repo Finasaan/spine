@@ -7,7 +7,7 @@ import { AppContext, errorResponse, paginatedResponse } from "../types";
 export const psxController = {
   /**
    * Get list of companies with optional search and latest price data
-   * Query params: limit, offset, search, withPrice (default: false)
+   * Query params: limit, offset, search, withPrice (default: false), sector (sector ID)
    */
   getCompanies: async (c: AppContext) => {
     try {
@@ -16,6 +16,7 @@ export const psxController = {
       const offset = parseInt(c.req.query("offset") || "0");
       const search = c.req.query("search") || "";
       const withPrice = c.req.query("withPrice") === "true";
+      const sectorId = c.req.query("sector") || "";
 
       // Bills & bonds sector to exclude
       const BILLS_BONDS_SECTOR_ID = "978757d6-3c54-4704-bf4b-5f0e489ab668";
@@ -25,6 +26,11 @@ export const psxController = {
         .from("companies")
         .select("id, symbol, company_name, sector_id", { count: "exact" })
         .neq("sector_id", BILLS_BONDS_SECTOR_ID);
+
+      // Add sector filter if provided
+      if (sectorId.trim()) {
+        query = query.eq("sector_id", sectorId);
+      }
 
       // Add search filter if provided
       if (search.trim()) {
