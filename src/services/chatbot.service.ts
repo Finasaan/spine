@@ -77,6 +77,45 @@ export async function generateEmbeddings(
 // ============================================
 
 /**
+ * Compute SHA-256 hash of a string or ArrayBuffer.
+ * Used to deduplicate financial documents before embedding.
+ */
+export async function computeDocumentHash(
+  content: string | ArrayBuffer
+): Promise<string> {
+  const bytes =
+    typeof content === "string"
+      ? new TextEncoder().encode(content)
+      : new Uint8Array(content);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Check if a financial document with the given hash already exists
+ * in chatbot_documents. Returns true if already ingested.
+ */
+export async function financialDocumentExists(
+  supabase: SupabaseClient,
+  documentHash: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("chatbot_documents")
+    .select("id")
+    .eq("document_hash", documentHash)
+    .limit(1);
+
+  if (error) {
+    console.warn(`[Chatbot] Hash check error: ${error.message}`);
+    return false; // Proceed with ingestion on error
+  }
+
+  return (data?.length || 0) > 0;
+}
+
+/**
  * Store document chunks with embeddings in Supabase
  */
 export async function storeDocuments(
@@ -88,7 +127,8 @@ export async function storeDocuments(
     company?: string;
     period?: string;
     content_type?: string;
-  }>
+  }>,
+  documentHash?: string
 ): Promise<number> {
   const { data, error } = await supabase
     .from("chatbot_documents")
@@ -100,6 +140,7 @@ export async function storeDocuments(
         company: doc.company || null,
         period: doc.period || null,
         content_type: doc.content_type || "text_chunk",
+        document_hash: documentHash || null,
       }))
     )
     .select("id");
