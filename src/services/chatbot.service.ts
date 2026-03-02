@@ -26,6 +26,74 @@ export async function computeDocumentHash(
 }
 
 // ============================================
+// Unified Knowledge Base (finasaan_documents)
+// ============================================
+
+/**
+ * Check if a document with the given hash already exists in finasaan_documents.
+ * Used for dedup in the hybrid PDF pipeline.
+ */
+export async function finasaanDocumentExists(
+  supabase: SupabaseClient,
+  documentHash: string
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("finasaan_documents")
+    .select("id")
+    .eq("document_hash", documentHash)
+    .limit(1);
+
+  if (error) {
+    console.warn(`[Chatbot] finasaan_documents hash check error: ${error.message}`);
+    return false; // Proceed with ingestion on error
+  }
+
+  return (data?.length || 0) > 0;
+}
+
+/**
+ * Store prose chunks with embeddings in the unified finasaan_documents table.
+ * Used by the hybrid PDF pipeline for prose text (Path A and vision prose).
+ *
+ * @param supabase - Supabase client
+ * @param documents - Array of content + embedding + metadata objects
+ * @param documentHash - SHA-256 hash of the source PDF for dedup
+ * @param domain - Knowledge base domain (default: 'financials')
+ * @returns Number of rows inserted
+ */
+export async function storeFinasaanDocuments(
+  supabase: SupabaseClient,
+  documents: Array<{
+    content: string;
+    embedding: number[];
+    metadata?: Record<string, unknown>;
+  }>,
+  documentHash: string,
+  domain: string = "financials"
+): Promise<number> {
+  if (documents.length === 0) return 0;
+
+  const { data, error } = await supabase
+    .from("finasaan_documents")
+    .insert(
+      documents.map((doc) => ({
+        domain,
+        content: doc.content,
+        embedding: JSON.stringify(doc.embedding),
+        metadata: doc.metadata || {},
+        document_hash: documentHash,
+      }))
+    )
+    .select("id");
+
+  if (error) {
+    throw new Error(`Failed to store finasaan_documents: ${error.message}`);
+  }
+
+  return data?.length || 0;
+}
+
+// ============================================
 // Session Management
 // ============================================
 

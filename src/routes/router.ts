@@ -10,6 +10,7 @@ import { watchlistRouter } from "./watchlist.router";
 import { portfolioRouter } from "./portfolio.router";
 import { marketRouter } from "./market.router";
 import { insuranceRouter } from "./insurance.router";
+import { extractionRouter } from "./extraction.router";
 
 /**
  * Main Router - Registers all route modules.
@@ -29,6 +30,7 @@ router.route("/api/watchlist", watchlistRouter);
 router.route("/api/portfolio", portfolioRouter);
 router.route("/api/market", marketRouter);
 router.route("/api/insurance", insuranceRouter);
+router.route("/api/extract", extractionRouter);
 
 // Preview routes
 router.route("/api/preview", healthRouter);
@@ -42,5 +44,6 @@ router.route("/api/preview/watchlist", watchlistRouter);
 router.route("/api/preview/portfolio", portfolioRouter);
 router.route("/api/preview/market", marketRouter);
 router.route("/api/preview/insurance", insuranceRouter);
+router.route("/api/preview/extract", extractionRouter);
 
 export { router };

@@ -15,7 +15,24 @@ import {
   getSessionMessages,
   deleteSession,
   uploadConversationDocument,
+  storeFinasaanDocuments,
+  finasaanDocumentExists,
+  computeDocumentHash,
 } from "../services/chatbot.service";
+import { generateEmbeddings } from "../services/ai.service";
+import {
+  extractPageViaVision,
+  isVisionTableValid,
+  buildExtractedTableRecord,
+  storeExtractedTable,
+} from "../services/extraction.service";
+import {
+  extractPerPageTexts,
+  isTableHeavyPage,
+  renderPageToBase64PNG,
+  countNonWhitespace,
+  chunkText,
+} from "../services/pdf.service";
 import type { StreamRequest, ModelConfig } from "../types/chatbot.types";
 import modelsConfig from "../config/models.json";
 
@@ -41,6 +58,7 @@ Rules:
 - Cite your sources at the end of data-heavy responses.
 
 Tool usage strategy:
+- When the user asks about an uploaded document or file: ALWAYS call searchConversationDocument first.
 - For "best performing", "top", or ranking questions: use queryMutualFunds or getTopStocks with appropriate sortBy and sortOrder desc.
 - For period-based returns (e.g. "best fund over 5 years"): use queryMutualFunds with sortBy='return' and returnPeriodMonths (12=1yr, 36=3yr, 60=5yr).
 - For category-specific queries (equity funds, money market, Islamic): use the category filter on queryMutualFunds.
@@ -297,6 +315,252 @@ export async function handleUploadAttachment(
     return c.json(
       {
         error: "Upload failed",
+        message: error instanceof Error ? error.message : "Unknown error",
+      },
+      500,
+    );
+  }
+}
+
+/**
+ * Upload and process PDF document — hybrid per-page pipeline.
+ * POST /api/chatbot/documents/upload
+ *
+ * Each page is classified and routed:
+ *   Path A (Prose): Selectable text, not table-heavy → accumulate → chunk → embed → finasaan_documents
+ *   Path B (Table-heavy selectable): Table-heavy text → render page to PNG → vision LLM → tables + prose
+ *   Path C (Scanned): Entire PDF < 200 non-whitespace chars → ALL pages via vision
+ *
+ * Fallback chain: render fails → text-only vision. Vision fails → treat as prose. Never crash.
+ */
+export async function handleUploadPDF(
+  c: Context<{ Bindings: CloudflareBindings }>
+) {
+  try {
+    // 1. Parse multipart form data
+    const formData = await c.req.formData();
+    const file = formData.get("file") as File | null;
+    const company = formData.get("company") as string | null;
+    const period = formData.get("period") as string | null;
+    const docType = formData.get("doc_type") as string | null;
+
+    // 2. Validate
+    if (!file) {
+      return c.json({ error: "No PDF file provided" }, 400);
+    }
+    if (!file.name.toLowerCase().endsWith(".pdf")) {
+      return c.json({ error: "Only PDF files are allowed" }, 400);
+    }
+    const maxSize = 10 * 1024 * 1024;
+    if (file.size > maxSize) {
+      return c.json({ error: "File too large. Maximum size is 10MB" }, 400);
+    }
+
+    console.log(`[UploadPDF] Processing: ${file.name} (${file.size} bytes)`);
+
+    // 3. Hash raw PDF bytes for deduplication
+    const pdfBuffer = await file.arrayBuffer();
+    const documentHash = await computeDocumentHash(pdfBuffer);
+
+    // 4. Dedup check against finasaan_documents
+    const supabase = await getSupabaseAdminClient(c.env);
+    const alreadyExists = await finasaanDocumentExists(supabase, documentHash);
+    if (alreadyExists) {
+      return c.json({
+        success: true,
+        message: "Document already ingested (duplicate hash)",
+        skipped: true,
+        statistics: {
+          filename: file.name,
+          company: company || "Not specified",
+          period: period || "Not specified",
+          doc_type: docType || "Not specified",
+          total_pages: 0,
+          scanned: false,
+          vision_pages_processed: 0,
+          prose_chunks_stored: 0,
+          tables_extracted: 0,
+        },
+      });
+    }
+
+    const aiGatewayToken = c.env.AI_GATEWAY_TOKEN;
+    const ai = c.env.AI;
+    const pdfData = new Uint8Array(pdfBuffer);
+
+    // 5. Extract per-page texts (single PDF parse)
+    const pageTexts = await extractPerPageTexts(pdfData);
+    const totalPages = pageTexts.length;
+
+    // Derive full text from per-page results to avoid parsing PDF twice
+    const fullText = pageTexts.join("\n");
+    const isScanned = countNonWhitespace(fullText) < 200;
+
+    console.log(`[UploadPDF] Scanned: ${isScanned}, fullText chars: ${countNonWhitespace(fullText)}, pages: ${totalPages}`);
+
+    // 7. Per-page hybrid classification loop
+    const proseBuffer: string[] = [];
+    const extractedTableIds: string[] = [];
+    let visionPagesProcessed = 0;
+
+    for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+      const pageText = pageTexts[pageIndex];
+      const pageNumber = pageIndex + 1;
+      const tableHeavy = isTableHeavyPage(pageText);
+
+      console.log(
+        `[UploadPDF] Page ${pageNumber}/${totalPages}: ` +
+          `${pageText.length} chars, ` +
+          `tableHeavy=${tableHeavy}, ` +
+          `preview="${pageText.substring(0, 120).replace(/\n/g, " ")}..."`
+      );
+
+      if (isScanned || tableHeavy) {
+        // --- Path B / Path C: Vision extraction ---
+        let base64PNG: string | null = null;
+        try {
+          base64PNG = await renderPageToBase64PNG(pdfData, pageNumber);
+        } catch (renderErr) {
+          console.warn(
+            `[UploadPDF] renderPageToBase64PNG failed page ${pageNumber}, using text fallback:`,
+            renderErr instanceof Error ? renderErr.message : renderErr
+          );
+        }
+
+        let visionResult;
+        try {
+          visionResult = await extractPageViaVision(
+            aiGatewayToken,
+            base64PNG,
+            {
+              company_name: company || "Unknown",
+              doc_type: docType || undefined,
+              pageNumber,
+              totalPages,
+            },
+            pageText // fallback text when base64PNG is null
+          );
+          visionPagesProcessed++;
+        } catch (visionErr) {
+          // Vision failed entirely — treat page as prose (fallback)
+          console.warn(
+            `[UploadPDF] Vision extraction failed page ${pageNumber}, treating as prose:`,
+            visionErr instanceof Error ? visionErr.message : visionErr
+          );
+          if (pageText.trim().length > 0) {
+            proseBuffer.push(pageText);
+          }
+          continue;
+        }
+
+        // Accumulate vision prose
+        if (visionResult.prose.trim().length > 50) {
+          proseBuffer.push(visionResult.prose);
+        }
+
+        // Store valid tables
+        for (const table of visionResult.tables) {
+          if (isVisionTableValid(table)) {
+            try {
+              const record = buildExtractedTableRecord(
+                table,
+                documentHash,
+                company,
+                docType
+              );
+              const tableId = await storeExtractedTable(supabase, record);
+              extractedTableIds.push(tableId);
+            } catch (storeErr) {
+              console.warn(
+                `[UploadPDF] Failed to store extracted table on page ${pageNumber}:`,
+                storeErr instanceof Error ? storeErr.message : storeErr
+              );
+            }
+          } else {
+            console.log(
+              `[UploadPDF] Vision table invalid on page ${pageNumber}, skipping: ${table.table_name || "(unnamed)"}`
+            );
+          }
+        }
+      } else {
+        // --- Path A: Prose page with selectable text ---
+        if (pageText.trim().length > 0) {
+          proseBuffer.push(pageText);
+        }
+      }
+    }
+
+    // 8. Chunk accumulated prose, embed, and store in finasaan_documents
+    const allProseText = proseBuffer.join("\n\n");
+    let storedCount = 0;
+
+    if (allProseText.length > 0) {
+      const chunks = chunkText(allProseText, company || undefined, period || undefined, {
+        chunkSize: 1000,
+        overlap: 200,
+      });
+
+      if (chunks.length > 0) {
+        const texts = chunks.map((ch) => ch.text);
+
+        // Batch embeddings in groups of 20 (Workers AI limit)
+        const allEmbeddings: number[][] = [];
+        const batchSize = 20;
+        for (let i = 0; i < texts.length; i += batchSize) {
+          const batch = texts.slice(i, i + batchSize);
+          const batchEmbeddings = await generateEmbeddings(ai, batch);
+          allEmbeddings.push(...batchEmbeddings);
+        }
+
+        const documents = chunks.map((chunk, i) => ({
+          content: chunk.text,
+          embedding: allEmbeddings[i],
+          metadata: {
+            ...chunk.metadata,
+            company: company || undefined,
+            period: period || undefined,
+            doc_type: docType || undefined,
+            filename: file.name,
+          } as Record<string, unknown>,
+        }));
+
+        storedCount = await storeFinasaanDocuments(
+          supabase,
+          documents,
+          documentHash,
+          "financials"
+        );
+      }
+    }
+
+    console.log(
+      `[UploadPDF] Done: ${storedCount} prose chunks stored, ` +
+        `${extractedTableIds.length} tables extracted, ` +
+        `${visionPagesProcessed} vision pages processed`
+    );
+
+    // 9. Return response with statistics
+    return c.json({
+      success: true,
+      message: "PDF processed and ingested successfully",
+      statistics: {
+        filename: file.name,
+        company: company || "Not specified",
+        period: period || "Not specified",
+        doc_type: docType || "Not specified",
+        total_pages: totalPages,
+        scanned: isScanned,
+        vision_pages_processed: visionPagesProcessed,
+        prose_chunks_stored: storedCount,
+        tables_extracted: extractedTableIds.length,
+      },
+    });
+  } catch (error) {
+    console.error("[UploadPDF] Error:", error);
+    return c.json(
+      {
+        success: false,
+        error: "PDF processing failed",
         message: error instanceof Error ? error.message : "Unknown error",
       },
       500,

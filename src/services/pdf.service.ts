@@ -1,25 +1,160 @@
 /**
  * PDF Processing Service
- * Handles PDF text extraction and text chunking for RAG
+ * Handles PDF text extraction, per-page analysis, page rendering,
+ * and text chunking for the hybrid RAG ingestion pipeline.
  */
 
 /**
- * Extract text content from PDF buffer
- * Uses unpdf for text extraction (designed for serverless/edge environments)
+ * Extract text content from PDF buffer (all pages merged).
+ * Uses unpdf for text extraction (designed for serverless/edge environments).
  */
 export async function extractTextFromPDF(
   pdfBuffer: ArrayBuffer
 ): Promise<string> {
-  // Use unpdf which is designed for Cloudflare Workers and edge environments
   const { extractText } = await import("unpdf");
-
-  // Convert ArrayBuffer to Uint8Array for unpdf
   const buffer = new Uint8Array(pdfBuffer);
-
   const result = await extractText(buffer);
-
-  // unpdf returns text as string[] (array of text per page), join with newlines
   return result.text.join("\n");
+}
+
+// ============================================================================
+// Per-Page Text Extraction
+// ============================================================================
+
+/**
+ * Extract text from each page individually.
+ * Returns an array where index 0 = page 1's text, etc.
+ *
+ * Uses unpdf's extractText which returns a per-page string array natively.
+ * NOTE: getDocumentProxy is NOT usable in CF Workers — it relies on pdf.js
+ * internal worker messaging (structured cloning) which throws
+ * "Unable to deserialize cloned data" at runtime.
+ */
+export async function extractPerPageTexts(
+  pdfData: Uint8Array
+): Promise<string[]> {
+  const { extractText } = await import("unpdf");
+  const result = await extractText(pdfData);
+  return result.text;
+}
+
+// ============================================================================
+// Page Classification
+// ============================================================================
+
+/**
+ * Detect whether a page is table/numeric-heavy.
+ * Used to decide if a selectable-text page should go through vision (Path B)
+ * or be treated as plain prose (Path A).
+ *
+ * NOTE: unpdf's extractText returns each page as a single string (no newlines),
+ * so line-based heuristics don't work. We use token-level analysis instead.
+ */
+export function isTableHeavyPage(pageText: string): boolean {
+  const trimmed = pageText.trim();
+  if (trimmed.length === 0) return false;
+
+  const tokens = trimmed.match(/\S+/g) || [];
+  if (tokens.length === 0) return false;
+
+  // 1. High ratio of numeric tokens (numbers, parenthesized negatives, percentages)
+  //    Financial tables have lines like "Revenue 1,234,567 987,654"
+  const numericTokens = tokens.filter((t) =>
+    /^[\d,]+\.?\d*$/.test(t) ||           // plain numbers: 1,234,567 or 42.5
+    /^\([\d,]+\.?\d*\)$/.test(t) ||       // parenthesized negatives: (1,234)
+    /^-[\d,]+\.?\d*$/.test(t) ||          // dash negatives: -1,234
+    /^[\d,]+\.?\d*%$/.test(t)             // percentages: 15.5%
+  ).length;
+
+  const numericRatio = numericTokens / tokens.length;
+  if (numericRatio > 0.20) return true;
+
+  // 2. Absolute count of numeric tokens — financial pages have many numbers
+  //    even if the ratio is diluted by long labels
+  if (numericTokens >= 15) return true;
+
+  // 3. Presence of financial keywords alongside numbers suggests table content
+  const lowerText = trimmed.toLowerCase();
+  const financialKeywords = [
+    "revenue", "profit", "loss", "income", "expense", "assets",
+    "liabilities", "equity", "cash", "dividend", "earnings",
+    "balance sheet", "income statement", "cash flow", "financial position",
+    "total", "net", "gross", "operating", "depreciation", "amortization",
+    "receivable", "payable", "inventory", "share capital",
+    "rupees", "pkr", "rs.", "rs ", "'000", "thousands", "millions",
+  ];
+  const keywordHits = financialKeywords.filter((kw) =>
+    lowerText.includes(kw)
+  ).length;
+
+  // If we have some numbers AND multiple financial keywords, it's likely tabular
+  if (numericTokens >= 5 && keywordHits >= 3) return true;
+
+  // 4. Pipe-separated table formatting (may still appear in some extractors)
+  const pipeCount = (trimmed.match(/\|/g) || []).length;
+  if (pipeCount >= 6) return true;
+
+  return false;
+}
+
+// ============================================================================
+// Page-to-Image Rendering
+// ============================================================================
+
+/**
+ * Render a single PDF page to a base64-encoded PNG string.
+ *
+ * KNOWN LIMITATION: This function uses getDocumentProxy from unpdf, which
+ * relies on pdf.js's structured cloning and does NOT work in Cloudflare
+ * Workers (throws "Unable to deserialize cloned data"). The caller MUST
+ * wrap this in a try-catch and fall back to text-only vision when it fails.
+ *
+ * This function is kept for future compatibility if CF Workers adds support,
+ * or if the code runs in a different runtime (Node.js, Deno, etc.).
+ *
+ * @param pdfData - PDF file as Uint8Array
+ * @param pageNumber - 1-based page number
+ * @param scale - Render scale (2.0 = good OCR quality without excessive size)
+ * @returns base64-encoded PNG string (no data URI prefix)
+ */
+export async function renderPageToBase64PNG(
+  pdfData: Uint8Array,
+  pageNumber: number,
+  scale: number = 2.0
+): Promise<string> {
+  const { getDocumentProxy } = await import("unpdf");
+  const doc = await getDocumentProxy(pdfData);
+  const page = await doc.getPage(pageNumber);
+
+  const viewport = page.getViewport({ scale });
+  const canvas = new OffscreenCanvas(
+    Math.floor(viewport.width),
+    Math.floor(viewport.height)
+  );
+  const context = canvas.getContext("2d") as OffscreenCanvasRenderingContext2D;
+
+  await page.render({
+    canvasContext: context as unknown as CanvasRenderingContext2D,
+    viewport,
+  }).promise;
+
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = new Uint8Array(arrayBuffer);
+
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+/**
+ * Count non-whitespace characters in a string.
+ * Used to detect scanned PDFs (< 200 non-whitespace chars = scanned).
+ */
+export function countNonWhitespace(text: string): number {
+  return (text.match(/\S/g) || []).length;
 }
 
 /**

@@ -8,6 +8,7 @@ import { authMiddleware } from "../middleware/auth.middleware";
 import {
   handleStream,
   handleUploadAttachment,
+  handleUploadPDF,
   handleGetModels,
   handleGetSessions,
   handleGetSession,
@@ -34,6 +35,9 @@ chatbotRouter.post("/stream", handleStream);
 
 // Conversation-scoped PDF attachment upload
 chatbotRouter.post("/upload-attachment", handleUploadAttachment);
+
+// Financial document ingestion (hybrid vision pipeline → finasaan_documents + extracted_tables)
+chatbotRouter.post("/documents/upload", handleUploadPDF);
 
 // Session management
 chatbotRouter.get("/sessions", handleGetSessions);
