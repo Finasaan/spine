@@ -20,7 +20,7 @@ export interface ModelConfig {
   description: string;
 }
 
-export const DEFAULT_MODEL_ID = "llama-3.1-8b-instant";
+export const DEFAULT_MODEL_ID = "gemini-2.5-flash-lite";
 
 // ============================================
 // Chat Session Types

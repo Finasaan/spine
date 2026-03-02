@@ -20,6 +20,7 @@ app.use(
     origin: ["http://localhost:3000", "https://*.finasaan.com"],
     allowMethods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
     allowHeaders: ["Content-Type", "Authorization"],
+    exposeHeaders: ["X-Session-Id"],
     credentials: true,
   })
 );

@@ -24,7 +24,7 @@ import modelsConfig from "../config/models.json";
 // ============================================
 
 const MODELS: ModelConfig[] = modelsConfig as ModelConfig[];
-const DEFAULT_MODEL_ID = "llama-3.1-8b-instant";
+const DEFAULT_MODEL_ID = "gemini-2.5-flash-lite";
 
 const SYSTEM_PROMPT = `You are FinasaanGPT, an AI financial intelligence assistant for Finasaan — Pakistan's premier investment platform covering PSX stocks, mutual funds, and insurance.
 
@@ -90,23 +90,33 @@ export async function handleStream(
       modelConfig,
     );
 
+    // Helper to extract text from a message (handles both .content and .parts)
+    const extractText = (msg: unknown): string => {
+      if (!msg) return "";
+      const m = msg as any;
+      if (typeof m.content === "string" && m.content) return m.content;
+      const parts = Array.isArray(m.parts)
+        ? m.parts
+        : Array.isArray(m.content)
+          ? m.content
+          : [];
+      const textPart = parts.find((p: any) => p.type === "text");
+      return textPart?.text ?? "";
+    };
+
     // Derive a short title from the first user message for new sessions
     const firstUserMsg = messages.find((m) => m.role === "user");
-    const rawContent = firstUserMsg?.content;
-    const firstText =
-      typeof rawContent === "string"
-        ? rawContent
-        : Array.isArray(rawContent)
-          ? ((
-              rawContent.find(
-                (p: unknown) => (p as { type: string }).type === "text",
-              ) as { text: string } | undefined
-            )?.text ?? "")
-          : "";
+    const firstText = extractText(firstUserMsg);
     const title =
       firstText.length > 60
         ? firstText.substring(0, 57) + "..."
         : firstText || "New chat";
+
+    // For database persistence on this turn, we need the latest user message
+    const latestUserMsg = [...messages]
+      .reverse()
+      .find((m) => m.role === "user");
+    const latestText = extractText(latestUserMsg);
 
     // Get or create session
     const session = await getOrCreateSession(
@@ -117,9 +127,49 @@ export async function handleStream(
       modelConfig.id,
     );
 
+    // Sanitize messages: remove any orphaned tool-call parts that don't have
+    // matching tool-result parts. This prevents MissingToolResultsError when
+    // a previous stream errored mid-tool-call and the result was never saved.
+    const sanitizedMessages = (
+      messages as Array<{
+        role: string;
+        parts?: Array<{
+          type: string;
+          toolCallId?: string;
+          [k: string]: unknown;
+        }>;
+        [k: string]: unknown;
+      }>
+    ).map((msg) => {
+      if (msg.role !== "assistant" || !Array.isArray(msg.parts)) return msg;
+
+      // Collect all tool-result IDs across all messages
+      const resultIds = new Set<string>();
+      for (const m of messages as Array<{
+        parts?: Array<{ type: string; toolCallId?: string }>;
+      }>) {
+        if (!Array.isArray(m.parts)) continue;
+        for (const p of m.parts) {
+          if (p.type === "tool-result" && p.toolCallId) {
+            resultIds.add(p.toolCallId);
+          }
+        }
+      }
+
+      // Filter out tool-call parts without matching results
+      const filteredParts = msg.parts.filter((p) => {
+        if (p.type === "tool-call" && p.toolCallId) {
+          return resultIds.has(p.toolCallId);
+        }
+        return true;
+      });
+
+      return { ...msg, parts: filteredParts };
+    });
+
     // Convert UI messages → model messages (AI SDK v6 async)
     const modelMessages = await convertToModelMessages(
-      messages as Parameters<typeof convertToModelMessages>[0],
+      sanitizedMessages as Parameters<typeof convertToModelMessages>[0],
     );
 
     // Create tools
@@ -187,7 +237,7 @@ export async function handleStream(
           const toolsUsed = steps.flatMap((s) =>
             (s.toolCalls ?? []).map((tc) => tc.toolName),
           );
-          await persistMessages(supabase, session.id, firstText, text, {
+          await persistMessages(supabase, session.id, latestText, text, {
             model: modelConfig.id,
             toolsUsed,
             sessionId: session.id,
