@@ -18,10 +18,11 @@ export type { } from "./knowledge.tools";
 export function createAllTools(
   supabase: SupabaseClient,
   ai: Ai,
-  userId: string
+  userId: string,
+  sessionId: string,
 ) {
   return {
-    ...createKnowledgeTools(supabase, ai),
+    ...createKnowledgeTools(supabase, ai, sessionId),
     ...createMarketTools(supabase),
     ...createFundsTools(supabase),
     ...createUserTools(supabase, userId),

@@ -5,7 +5,7 @@
 
 import { Context } from "hono";
 import { streamText, stepCountIs, convertToModelMessages } from "ai";
-import { getSupabaseClient } from "../db";
+import { getSupabaseAdminClient } from "../db";
 import { createModel } from "../services/ai.service";
 import { createAllTools } from "../services/tools";
 import {
@@ -82,7 +82,7 @@ export async function handleStream(
     }
 
     const user = c.get("user");
-    const supabase = await getSupabaseClient(c.env);
+    const supabase = await getSupabaseAdminClient(c.env);
     const modelConfig = resolveModel(modelId);
     const model = createModel(
       c.env.AI_GATEWAY_TOKEN,
@@ -172,8 +172,8 @@ export async function handleStream(
       sanitizedMessages as Parameters<typeof convertToModelMessages>[0],
     );
 
-    // Create tools
-    const tools = createAllTools(supabase, c.env.AI, user.id);
+    // Create tools — pass session.id so searchConversationDocument is scoped correctly
+    const tools = createAllTools(supabase, c.env.AI, user.id, session.id);
 
     // Log the request being sent to the LLM
     const toolNames = Object.keys(tools);
@@ -281,7 +281,7 @@ export async function handleUploadAttachment(
     if (!sessionId) return c.json({ error: "sessionId required" }, 400);
 
     const user = c.get("user");
-    const supabase = await getSupabaseClient(c.env);
+    const supabase = await getSupabaseAdminClient(c.env);
 
     const result = await uploadConversationDocument(
       supabase,
@@ -331,7 +331,7 @@ export async function handleGetSessions(
 ) {
   try {
     const user = c.get("user");
-    const supabase = await getSupabaseClient(c.env);
+    const supabase = await getSupabaseAdminClient(c.env);
     const sessions = await getUserSessions(supabase, user.id);
     return c.json({ sessions, count: sessions.length });
   } catch (error) {
@@ -350,7 +350,7 @@ export async function handleGetSession(
   try {
     const sessionId = c.req.param("id");
     const user = c.get("user");
-    const supabase = await getSupabaseClient(c.env);
+    const supabase = await getSupabaseAdminClient(c.env);
 
     const result = await getSessionMessages(supabase, sessionId, user.id);
     if (!result) return c.json({ error: "Session not found" }, 404);
@@ -372,7 +372,7 @@ export async function handleDeleteSession(
   try {
     const sessionId = c.req.param("id");
     const user = c.get("user");
-    const supabase = await getSupabaseClient(c.env);
+    const supabase = await getSupabaseAdminClient(c.env);
 
     await deleteSession(supabase, sessionId, user.id);
     return c.json({ success: true });

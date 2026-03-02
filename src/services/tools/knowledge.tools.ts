@@ -8,7 +8,7 @@ import { z } from "zod";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { generateEmbedding } from "../ai.service";
 
-export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
+export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai, sessionId: string) {
   return {
     searchKnowledge: tool({
       description:
@@ -85,10 +85,9 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
 
     searchConversationDocument: tool({
       description:
-        "Search within documents the user uploaded to this conversation. Input: query string and session ID.",
+        "Search within documents the user uploaded to this conversation. Use this whenever the user asks about an uploaded file or document.",
       inputSchema: z.object({
         query: z.string().describe("Search query string"),
-        sessionId: z.string().describe("Current chat session ID"),
         limit: z.coerce
           .number()
           .int()
@@ -98,7 +97,7 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
           .default(4)
           .describe("Number of chunks to retrieve"),
       }),
-      execute: async ({ query, sessionId, limit }) => {
+      execute: async ({ query, limit }) => {
         try {
           const embedding = await generateEmbedding(ai, query);
           const vectorStr = JSON.stringify(embedding);
@@ -142,8 +141,7 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai) {
             sessionId,
             results: [],
             total: 0,
-            error:
-              err instanceof Error ? err.message : "Document search failed",
+            error: err instanceof Error ? err.message : "Document search failed",
           };
         }
       },
