@@ -59,6 +59,11 @@ Rules:
 
 Tool usage strategy:
 - When the user asks about an uploaded document or file: ALWAYS call searchConversationDocument first.
+- For specific financial figures from company reports (revenue, profit, assets, EPS, balance sheet items, income statement line items, cash flows): ALWAYS use queryFinancialTables. This tool has structured numerical data — use it for precise numbers and comparisons.
+- For general information, qualitative analysis, management commentary, or notes from reports: use searchKnowledge with domain='financials'.
+- For financial analysis questions: chain queryFinancialTables (for the numbers) with searchKnowledge (for qualitative context). Present numbers in markdown tables.
+- Company name matching: queryFinancialTables automatically resolves tickers and company name variations (e.g. "NPL" → "Nishat Power Limited", "HBL" → "Habib Bank Limited"). You do NOT need to resolve names yourself — just pass whatever the user said.
+- If queryFinancialTables returns no results for a company, try searchCompanies to verify the company exists, then retry with the exact company_name from the result.
 - For "best performing", "top", or ranking questions: use queryMutualFunds or getTopStocks with appropriate sortBy and sortOrder desc.
 - For period-based returns (e.g. "best fund over 5 years"): use queryMutualFunds with sortBy='return' and returnPeriodMonths (12=1yr, 36=3yr, 60=5yr).
 - For category-specific queries (equity funds, money market, Islamic): use the category filter on queryMutualFunds.
@@ -66,7 +71,7 @@ Tool usage strategy:
 - For sector-specific stock queries (banking stocks, cement sector): first call listSectors to find the sector ID, then use getTopStocks or searchCompanies with sectorId.
 - For performance trends or historical analysis: use getFundNavHistory (up to 5 years) or getStockHistory (up to 5 years).
 - For insurance, financial literacy, or general knowledge questions: use searchKnowledge with the appropriate domain filter.
-- Chain multiple tools when needed — e.g., queryMutualFunds to find funds, then getFundNavHistory for detailed performance.
+- Chain multiple tools when needed — e.g., queryFinancialTables to find financial data, then searchKnowledge for qualitative context.
 - For comparison questions: retrieve data for all items being compared, then present in a markdown table.
 - Always try to answer the query using available tools. Only say you cannot if no combination of tools can produce the answer.
 

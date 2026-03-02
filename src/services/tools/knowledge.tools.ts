@@ -1,12 +1,74 @@
 /**
  * Knowledge Tools — FinasaanGPT
- * Semantic RAG search over finasaan_documents and conversation_document_chunks.
+ * Semantic RAG search over finasaan_documents, conversation_document_chunks,
+ * and structured financial tables from extracted_tables.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { generateEmbedding } from "../ai.service";
+
+// ============================================================================
+// Company Name Resolution Helper
+// ============================================================================
+
+/**
+ * Resolve a user-provided company name or ticker to a set of search terms.
+ * Queries the `companies` table to find matching symbols and names,
+ * so "NPL" resolves to ["NPL", "Nishat Power Limited"] and vice versa.
+ *
+ * Returns an array of unique ilike patterns to OR together.
+ */
+async function resolveCompanyNames(
+  supabase: SupabaseClient,
+  input: string,
+): Promise<string[]> {
+  const terms = new Set<string>();
+  terms.add(input);
+
+  // Strip common suffixes/parenthetical tickers for broader matching
+  const cleaned = input
+    .replace(/\s*\(.*?\)\s*/g, "") // Remove parenthetical like "(NPL)"
+    .replace(/\s+(limited|ltd|plc|inc)\.?$/i, "") // Remove corporate suffixes
+    .trim();
+  if (cleaned && cleaned !== input) terms.add(cleaned);
+
+  // Extract ticker from parenthetical if present, e.g. "Nishat Power (NPL)" → "NPL"
+  const tickerMatch = input.match(/\(([A-Z0-9]+)\)/);
+  if (tickerMatch) terms.add(tickerMatch[1]);
+
+  try {
+    // Search companies table for matches on any of our terms
+    const orClauses = Array.from(terms)
+      .flatMap((t) => [
+        `symbol.ilike.%${t}%`,
+        `company_name.ilike.%${t}%`,
+      ])
+      .join(",");
+
+    const { data } = await supabase
+      .from("companies")
+      .select("symbol, company_name")
+      .or(orClauses)
+      .limit(5);
+
+    if (data) {
+      for (const row of data) {
+        if (row.symbol) terms.add(row.symbol as string);
+        if (row.company_name) terms.add(row.company_name as string);
+      }
+    }
+  } catch {
+    // Non-fatal — proceed with whatever terms we have
+  }
+
+  return Array.from(terms);
+}
+
+// ============================================================================
+// Tool Factory
+// ============================================================================
 
 export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai, sessionId: string) {
   return {
@@ -78,6 +140,131 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai, sessionId
             results: [],
             total: 0,
             error: err instanceof Error ? err.message : "Search failed",
+          };
+        }
+      },
+    }),
+
+    queryFinancialTables: tool({
+      description:
+        "Query structured financial tables (income statements, balance sheets, cash flows, key metrics, etc.) extracted from uploaded company reports. Use this when the user asks about specific financial figures, revenue, profit, assets, liabilities, or any numerical data from annual/quarterly reports. Returns actual structured data with headers and rows — ideal for numerical analysis, period-over-period comparisons, and ratio calculations. Company names and tickers are automatically resolved (e.g. 'NPL' matches 'Nishat Power Limited').",
+      inputSchema: z.object({
+        company: z
+          .string()
+          .optional()
+          .describe(
+            "Company name or PSX ticker symbol (e.g. 'NPL', 'Nishat Power', 'HBL'). Partial matches work.",
+          ),
+        tableType: z
+          .enum([
+            "income_statement",
+            "balance_sheet",
+            "cash_flow",
+            "key_metrics",
+            "segment_data",
+            "fund_portfolio",
+            "premium_schedule",
+            "coverage_table",
+            "rate_table",
+            "general",
+            "all",
+          ])
+          .optional()
+          .default("all")
+          .describe("Filter by table type, or 'all' for any type"),
+        fiscalPeriod: z
+          .string()
+          .optional()
+          .describe(
+            "Fiscal period filter (e.g. '2024', '2023', 'Q3 2024', '2024-06-30')",
+          ),
+        limit: z.coerce
+          .number()
+          .int()
+          .min(1)
+          .max(10)
+          .optional()
+          .default(5)
+          .describe("Max tables to return"),
+      }),
+      execute: async ({ company, tableType, fiscalPeriod, limit }) => {
+        try {
+          let query = supabase
+            .from("extracted_tables")
+            .select(
+              "id, company_name, company_id, table_name, table_type, " +
+                "fiscal_period, fiscal_period_end, currency, table_unit, " +
+                "comparative, headers, rows, source_type, created_at",
+            )
+            .order("created_at", { ascending: false })
+            .limit(limit ?? 5);
+
+          // Company filter with automatic name resolution
+          if (company?.trim()) {
+            const names = await resolveCompanyNames(supabase, company.trim());
+            const orClauses = names
+              .flatMap((n) => [
+                `company_name.ilike.%${n}%`,
+                `company_id.ilike.%${n}%`,
+              ])
+              .join(",");
+            query = query.or(orClauses);
+          }
+
+          // Table type filter
+          if (tableType && tableType !== "all") {
+            query = query.eq("table_type", tableType);
+          }
+
+          // Fiscal period filter (partial match)
+          if (fiscalPeriod?.trim()) {
+            query = query.or(
+              `fiscal_period.ilike.%${fiscalPeriod}%,fiscal_period_end::text.ilike.%${fiscalPeriod}%`,
+            );
+          }
+
+          const { data, error } = await query;
+
+          if (error) {
+            throw new Error(
+              `Financial tables query failed: ${error.message}`,
+            );
+          }
+
+          const tables = (data || []) as Array<Record<string, unknown>>;
+
+          return {
+            company: company || null,
+            tableType: tableType ?? "all",
+            fiscalPeriod: fiscalPeriod || null,
+            tables: tables.map((t) => ({
+              id: t.id,
+              companyName: t.company_name,
+              companyId: t.company_id,
+              tableName: t.table_name,
+              tableType: t.table_type,
+              fiscalPeriod: t.fiscal_period,
+              fiscalPeriodEnd: t.fiscal_period_end,
+              currency: t.currency,
+              tableUnit: t.table_unit,
+              comparative: t.comparative,
+              headers: t.headers,
+              rows: t.rows,
+              sourceType: t.source_type,
+            })),
+            total: tables.length,
+          };
+        } catch (err) {
+          return {
+            company: company || null,
+            tableType: tableType ?? "all",
+            fiscalPeriod: fiscalPeriod || null,
+            tables: [],
+            total: 0,
+            error:
+              err instanceof Error
+                ? err.message
+                : "Financial tables query failed",
           };
         }
       },

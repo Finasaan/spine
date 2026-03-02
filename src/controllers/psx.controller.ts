@@ -183,6 +183,76 @@ export const psxController = {
   },
 
   /**
+   * Get company financials: extracted_tables, financial_reports + line_items, company_ratios.
+   * Returns whatever data is available for the given company.
+   */
+  getCompanyFinancials: async (c: AppContext) => {
+    try {
+      const supabase = await getSupabaseClient(c.env);
+      const companyId = c.req.param("companyId");
+
+      // First, get the company info (we need symbol/name for extracted_tables lookup)
+      const { data: company, error: companyError } = await supabase
+        .from("companies")
+        .select("id, symbol, company_name")
+        .eq("id", companyId)
+        .single();
+
+      if (companyError || !company) {
+        return c.json({ success: false, error: "Company not found" }, 404);
+      }
+
+      // Parallel queries for all financial data sources
+      const [extractedResult, reportsResult, ratiosResult] = await Promise.all([
+        // 1. extracted_tables - match on company_id or company_name
+        supabase
+          .from("extracted_tables")
+          .select(
+            "id, company_name, company_id, table_name, table_type, fiscal_period, fiscal_period_end, currency, table_unit, comparative, headers, rows, source_type, created_at"
+          )
+          .or(`company_id.ilike.%${company.symbol}%,company_name.ilike.%${company.company_name}%`)
+          .order("fiscal_period_end", { ascending: false, nullsFirst: false })
+          .limit(20),
+
+        // 2. financial_reports with their line items
+        supabase
+          .from("financial_reports")
+          .select(`
+            id, report_type, period_type, period_end_date, fiscal_year,
+            fiscal_quarter, currency, source_url, filed_date,
+            financial_report_line_items (
+              id, item_key, item_label, item_value
+            )
+          `)
+          .eq("company_id", companyId)
+          .order("period_end_date", { ascending: false })
+          .limit(12),
+
+        // 3. company_ratios
+        supabase
+          .from("company_ratios")
+          .select("id, as_of_date, ratio_key, ratio_value, ratio_period")
+          .eq("company_id", companyId)
+          .order("as_of_date", { ascending: false })
+          .limit(50),
+      ]);
+
+      return c.json({
+        success: true,
+        data: {
+          company: { id: company.id, symbol: company.symbol, company_name: company.company_name },
+          extracted_tables: extractedResult.data || [],
+          financial_reports: reportsResult.data || [],
+          company_ratios: ratiosResult.data || [],
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      return c.json(errorResponse(err), 500);
+    }
+  },
+
+  /**
    * Get top 10 stocks by value traded from the latest trade date
    * Used for dashboard display
    */

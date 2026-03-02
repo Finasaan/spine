@@ -9,6 +9,7 @@ const sectorsRouter = new Hono<{ Bindings: CloudflareBindings }>();
 
 // Sectors endpoints
 sectorsRouter.get("/", sectorsController.getSectors);
+sectorsRouter.get("/performance", sectorsController.getSectorPerformance);
 sectorsRouter.get("/:id", sectorsController.getSectorById);
 sectorsRouter.get("/:sectorId/companies", sectorsController.getSectorCompanies);
 
