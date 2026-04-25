@@ -218,7 +218,21 @@ export async function handleStream(
     // Stream response
     const result = streamText({
       model,
-      system: SYSTEM_PROMPT,
+      system: (() => {
+        let p = SYSTEM_PROMPT;
+        const pc = (body as any).pageContext;
+        if (pc) {
+          p += `\n\n[CURRENT PAGE CONTEXT]
+The user is currently looking at the webpage: ${pc.url}
+
+Below is the raw text scraped directly from their screen right now. You DO have access to this page because the text is provided to you right here. Do NOT claim you cannot scan or read the page. Use the provided text to answer questions about what they are looking at:
+
+--- START OF SCREEN TEXT ---
+${pc.content ? pc.content : "No text visible."}
+--- END OF SCREEN TEXT ---`;
+        }
+        return p;
+      })(),
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(8),

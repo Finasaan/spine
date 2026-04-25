@@ -120,6 +120,11 @@ export interface StreamRequest {
   sessionId: string | null;
   /** Model ID from models.json */
   modelId: string;
+  /** Optional page context for mini-assistant */
+  pageContext?: {
+    url: string;
+    content?: string;
+  };
 }
 
 export interface UploadAttachmentRequest {
