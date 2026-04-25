@@ -1,9 +1,9 @@
 import { generateText } from "ai";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createModel } from "./ai.service";
-import { queryTransactions } from "./budget.service";
+import { queryTransactions, getDashboard } from "./budget.service";
 import type { ModelConfig } from "../types/chatbot.types";
-import type { TransactionFilter } from "../types/budget.types";
+import type { TransactionFilter, BudgetDashboardData } from "../types/budget.types";
 import type {
   NLQueryRequest, NLQueryResponse, ParsedQueryFilter, QueryAggregation,
   TransactionListItem, StoredQueryContext, FrontendQueryContext,
@@ -307,7 +307,8 @@ export async function generateQueryExplanation(
   baseUrl: string,
   filter: ParsedQueryFilter,
   aggregation: QueryAggregation,
-  originalQuery: string
+  originalQuery: string,
+  dashboardData?: BudgetDashboardData
 ): Promise<string> {
   const resultStr = aggregation.metric === "total"
     ? `PKR ${aggregation.value?.toLocaleString()}`
@@ -317,14 +318,32 @@ export async function generateQueryExplanation(
         ? `${aggregation.value} transactions`
         : `${aggregation.transaction_count} transactions listed`;
 
-  const prompt = `You are a personal finance assistant. Answer the user's question in 1–2 plain sentences using only the provided data.
-Do not guess. Do not add advice. Just state what the data shows. Currency is PKR.
+  const dashboardStr = dashboardData ? `
+Overall Context for ${dashboardData.month}/${dashboardData.year}:
+- Total Income: PKR ${dashboardData.total_income.toLocaleString()}
+- Total Expenses: PKR ${dashboardData.total_expenses.toLocaleString()}
+- Savings: PKR ${dashboardData.savings.toLocaleString()} (${dashboardData.savings_rate.toFixed(1)}% rate)
+- Burn Rate: PKR ${dashboardData.burn_rate.toLocaleString()} / day
+- Overbudget Categories: ${dashboardData.category_breakdown.filter(c => c.over_budget).map(c => c.category.name).join(", ") || "none"}
+` : "";
+
+  const prompt = `You are a proactive financial advisor. Answer the user's question AND provide relevant proactive insights.
+Be analytical, encouraging, and actionable. Base advice ONLY on the provided data. Currency is PKR.
 
 User's original question: "${originalQuery}"
 Category: ${aggregation.category_name ?? "all categories"}
 Date range: ${aggregation.date_range_label}
 Result: ${resultStr}
-${aggregation.category_totals ? `Breakdown: ${aggregation.category_totals.map(c => `${c.category_name}: ${c.amount}`).join(", ")}` : ""}`;
+${aggregation.category_totals ? `Breakdown: ${aggregation.category_totals.map(c => `${c.category_name}: ${c.amount}`).join(", ")}` : ""}
+${dashboardStr}
+
+Instructions:
+1. State the data requested clearly.
+2. If the user's query result is high relative to income (e.g. >10%), mention it.
+3. If the user is over budget in a relevant category, point it out.
+4. If their savings rate is low (<10%), suggest ways to improve.
+5. Look at transaction descriptions (if provided) for recurring patterns like subscriptions or frequent luxury items.
+6. Keep response to 2–4 concise sentences.`;
 
   try {
     const { text } = await generateText({
@@ -392,8 +411,17 @@ export async function processNLQuery(
   // 5. Aggregate result
   const aggregation = await aggregateQueryResult(supabase, userId, filter);
 
-  // 6. Generate explanation
-  const explanation = await generateQueryExplanation(token, baseUrl, filter, aggregation, request.query);
+  // 6. Fetch Dashboard context for proactive advice
+  let dashboardData: BudgetDashboardData | undefined;
+  try {
+    const now = new Date();
+    dashboardData = await getDashboard(supabase, userId, filter.month || (now.getMonth() + 1), filter.year || now.getFullYear());
+  } catch (dbErr) {
+    console.error("[processNLQuery] Dashboard fetch failed:", dbErr);
+  }
+
+  // 7. Generate explanation
+  const explanation = await generateQueryExplanation(token, baseUrl, filter, aggregation, request.query, dashboardData);
 
   // 7. Upsert context
   await upsertQueryContext(supabase, userId, {
