@@ -52,6 +52,19 @@ export function getModelTokenLimit(model: GroqModelId): number {
   return GROQ_MODELS[model]?.maxTokens ?? 8000;
 }
 
+export interface ModelConfig {
+  id: string;
+  name: string;
+  provider: string;
+  gatewayProvider: string;
+  isPro: boolean;
+  isEnabled: boolean;
+  supportsToolCalling: boolean;
+  contextWindow: number;
+  maxOutputTokens: number;
+  description: string;
+}
+
 // ============================================
 // Chat Session Types
 // ============================================

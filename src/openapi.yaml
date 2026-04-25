@@ -1948,6 +1948,108 @@ paths:
       responses:
         '200':
           description: Plan updated
+  /budget/ai/query:
+    post:
+      summary: Natural language budget query (Asaan Budgeting)
+      operationId: queryBudgetAI
+      tags:
+        - Asaan Budgeting
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  example: "How much did I spend on food last month?"
+                context:
+                  type: object
+                  nullable: true
+      responses:
+        '200':
+          description: AI response with insights or data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  answer:
+                    type: string
+                  data:
+                    type: object
+                    nullable: true
+
+  /budget/ai/insights:
+    get:
+      summary: Get AI spending insights
+      operationId: getBudgetInsights
+      tags:
+        - Asaan Budgeting
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of spending insights
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  insights:
+                    type: array
+                    items:
+                      type: object
+
+  /budget/ai/suggestions:
+    get:
+      summary: Get AI budget suggestions
+      operationId: getBudgetSuggestions
+      tags:
+        - Asaan Budgeting
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of budget suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
 
 components:
   securitySchemes:

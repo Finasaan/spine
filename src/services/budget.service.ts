@@ -662,7 +662,7 @@ export async function queryTransactions(
 export async function createTransaction(
   db: SupabaseClient,
   userId: string,
-  body: CreateTransactionBody
+  body: CreateTransactionBody & { category_confidence?: number | null }
 ): Promise<BudgetTransaction> {
   await assertCategoryAccessible(db, userId, body.category_id);
 
@@ -676,7 +676,7 @@ export async function createTransaction(
       date: body.date,
       description: body.description.trim(),
       raw_description: body.description,
-      category_confidence: null,
+      category_confidence: body.category_confidence ?? null,
       notes: body.notes ?? null,
     })
     .select(

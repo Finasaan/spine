@@ -9,6 +9,7 @@ import {
   TransactionFilter,
   UpsertBudgetPlanBody,
 } from "../types/budget.types";
+import { classifyTransaction } from "../services/budget.ai.service";
 
 function parseMonth(value: string | undefined): number {
   const fallback = new Date().getMonth() + 1;
@@ -173,7 +174,22 @@ export async function createTransaction(c: AppContext) {
   try {
     const db = await getSupabaseAdminClient(c.env);
     const user = c.get("user");
-    const body = (await c.req.json()) as CreateTransactionBody;
+    const body = (await c.req.json()) as CreateTransactionBody & { category_confidence?: number | null };
+
+    // AI Classification
+    try {
+      const categories = await BudgetService.getCategories(db, user.id);
+      const classification = await classifyTransaction(
+        c.env.AI_GATEWAY_TOKEN,
+        c.env.AI_GATEWAY_BASE_URL,
+        body.description,
+        categories
+      );
+      body.category_confidence = classification.confidence;
+    } catch (aiErr) {
+      console.error("[createTransaction] AI classification failed:", aiErr);
+    }
+
     const data = await BudgetService.createTransaction(db, user.id, body);
     return c.json(successResponse(data), 201);
   } catch (err) {
