@@ -73,7 +73,10 @@ Tool usage strategy:
 - For insurance, financial literacy, or general knowledge questions: use searchKnowledge with the appropriate domain filter.
 - Chain multiple tools when needed — e.g., queryFinancialTables to find financial data, then searchKnowledge for qualitative context.
 - For comparison questions: retrieve data for all items being compared, then present in a markdown table.
+- For recent Pakistan economic news, market events, or "what's happening" questions: call getRecentHeadlines first for a broad view, then searchRecentNews for topic-specific semantic retrieval.
+- When citing news, always include the source name and publication date at the end of the response.
 - Always try to answer the query using available tools. Only say you cannot if no combination of tools can produce the answer.
+
 
 Today's date: ${new Date().toLocaleDateString("en-PK", { timeZone: "Asia/Karachi" })}`;
 
@@ -196,7 +199,7 @@ export async function handleStream(
     );
 
     // Create tools — pass session.id so searchConversationDocument is scoped correctly
-    const tools = createAllTools(supabase, c.env.AI, user.id, session.id);
+    const tools = createAllTools(supabase, c.env.AI, user.id, session.id, c.env);
 
     // Log the request being sent to the LLM
     const toolNames = Object.keys(tools);

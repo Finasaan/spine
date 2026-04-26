@@ -329,4 +329,40 @@ export const psxController = {
       return c.json(errorResponse(err), 500);
     }
   },
+
+  /**
+   * Get AI-generated "Pulse" summary for a company
+   */
+  getAISummary: async (c: AppContext) => {
+    try {
+      const supabase = await getSupabaseClient(c.env);
+      const symbol = c.req.param("symbol");
+      const { psxService } = await import("../services/psx.service");
+
+      // 1. Resolve company ID first
+      const { data: company, error: cErr } = await supabase
+        .from("companies")
+        .select("id")
+        .eq("symbol", symbol.toUpperCase())
+        .single();
+
+      if (cErr || !company) {
+        return c.json({ success: false, error: "Company not found" }, 404);
+      }
+
+      // 2. Generate summary
+      const context = await psxService.getStockPulseContext(supabase, company.id, symbol);
+      const summary = await psxService.generatePulseSummary(c.env, context);
+
+      return c.json({
+        success: true,
+        data: {
+          summary,
+          generated_at: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      return c.json(errorResponse(err), 500);
+    }
+  },
 };

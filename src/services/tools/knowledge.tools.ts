@@ -70,7 +70,13 @@ async function resolveCompanyNames(
 // Tool Factory
 // ============================================================================
 
-export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai, sessionId: string) {
+export function createKnowledgeTools(
+  supabase: SupabaseClient,
+  ai: Ai,
+  sessionId: string,
+  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string }
+) {
+
   return {
     searchKnowledge: tool({
       description:
@@ -95,7 +101,8 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai, sessionId
       }),
       execute: async ({ query, domain, limit }) => {
         try {
-          const embedding = await generateEmbedding(ai, query);
+          const embedding = await generateEmbedding(ai, query, env);
+
           const vectorStr = JSON.stringify(embedding);
 
           const { data, error } = await supabase.rpc(
@@ -333,5 +340,133 @@ export function createKnowledgeTools(supabase: SupabaseClient, ai: Ai, sessionId
         }
       },
     }),
+
+    getRecentHeadlines: tool({
+      description:
+        "Get the most recent economic and business news for Pakistan, sourced from Dawn Business, Profit Pakistan Today, and Tribune Business. Use this when the user asks what's happening in the market, recent developments, or general news. Returns articles ordered by most recent first.",
+      inputSchema: z.object({
+        limit: z.coerce.number().int().min(1).max(10).optional().default(5)
+          .describe("Number of articles to return"),
+        sentiment: z
+          .enum(["positive", "negative", "neutral", "all"])
+          .optional()
+          .default("all")
+          .describe("Filter by market sentiment"),
+        sector: z.string().optional()
+          .describe("Filter by affected sector (e.g. 'Banking', 'Oil & Gas')"),
+      }),
+      execute: async ({ limit, sentiment, sector }) => {
+        try {
+          let query = supabase
+            .from("economic_news")
+            .select(
+              "id, title, url, source, published_at, ai_summary, sentiment, " +
+              "affected_sectors, affected_tickers, impact_analysis"
+            )
+            .order("published_at", { ascending: false })
+            .limit(limit ?? 5);
+
+          if (sentiment && sentiment !== "all") {
+            query = query.eq("sentiment", sentiment);
+          }
+          if (sector) {
+            query = query.contains("affected_sectors", [sector]);
+          }
+
+          const { data, error } = await query;
+          if (error) throw new Error(error.message);
+
+          return {
+            articles: data ?? [],
+            total:    (data ?? []).length,
+            note:     "Articles ordered most recent first.",
+          };
+        } catch (err) {
+          return {
+            articles: [],
+            total:    0,
+            error:    err instanceof Error ? err.message : "Failed to fetch headlines",
+          };
+        }
+      },
+    }),
+
+    searchRecentNews: tool({
+      description:
+        "Search recent Pakistan economic and business news by topic, company, sector, or ticker. Use when the user asks about news on a specific topic, company, sector, or event.",
+      inputSchema: z.object({
+        query:        z.string().describe("Natural language search query or company/ticker name"),
+        limit:        z.coerce.number().int().min(1).max(8).optional().default(5).describe("Results to return"),
+        max_age_days: z.coerce.number().int().min(1).max(90).optional().default(30).describe("Only search articles from last N days"),
+      }),
+      execute: async ({ query, limit, max_age_days }) => {
+        const effectiveLimit = limit ?? 5;
+        const effectiveDays  = max_age_days ?? 30;
+
+        // --- Attempt 1: vector similarity search ---
+        try {
+          const embedding = await generateEmbedding(ai, query, env);
+          const { data, error } = await supabase.rpc("search_economic_news", {
+            query_embedding: JSON.stringify(embedding),
+            match_limit:     effectiveLimit,
+            min_similarity:  0.40,
+            max_age_days:    effectiveDays,
+          });
+
+          if (!error && (data ?? []).length > 0) {
+            const results = data as Array<{
+              id: string; title: string; url: string; source: string;
+              published_at: string; ai_summary: string; sentiment: string;
+              affected_sectors: string[]; affected_tickers: string[];
+              impact_analysis: string; similarity: number;
+            }>;
+            return {
+              query,
+              articles: results.map((r) => ({ ...r, similarity: Math.round(r.similarity * 1000) / 1000 })),
+              total:    results.length,
+            };
+          }
+        } catch {
+          // fall through to text search
+        }
+
+        // --- Attempt 2: return all recent articles, let the model filter ---
+        try {
+          const cutoff = new Date();
+          cutoff.setDate(cutoff.getDate() - effectiveDays);
+
+          const { data, error } = await supabase
+            .from("economic_news")
+            .select(
+              "id, title, url, source, published_at, ai_summary, sentiment, " +
+              "affected_sectors, affected_tickers, impact_analysis"
+            )
+            .gte("published_at", cutoff.toISOString())
+            .order("published_at", { ascending: false })
+            .limit(effectiveLimit);
+
+          if (error) throw new Error(error.message);
+
+          return {
+            query,
+            articles: (data ?? []) as Array<{
+              id: string; title: string; url: string; source: string;
+              published_at: string; ai_summary: string; sentiment: string;
+              affected_sectors: string[]; affected_tickers: string[];
+              impact_analysis: string;
+            }>,
+            total: (data ?? []).length,
+          };
+        } catch (err) {
+          return {
+            query,
+            articles: [],
+            total:    0,
+            error:    err instanceof Error ? err.message : "News search failed",
+          };
+        }
+      },
+    }),
   };
 }
+

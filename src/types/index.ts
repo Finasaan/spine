@@ -4,8 +4,13 @@ import { Context } from "hono";
  * Application context type with Cloudflare bindings
  */
 declare global {
+  interface Env {
+    CLOUDFLARE_ACCOUNT_ID?: string;
+    CLOUDFLARE_API_TOKEN?: string;
+  }
   type CloudflareBindings = Env;
 }
+
 
 export type AppContext = Context<{ Bindings: CloudflareBindings }>;
 

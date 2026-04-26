@@ -9,3 +9,5 @@ export { marketRouter } from "./market.router";
 export { budgetRouter } from "./budget.router";
 export { authRouter } from "./auth/auth.router";
 export { profileRouter } from "./profile.router";
+export { newsRouter } from "./news.router";
+

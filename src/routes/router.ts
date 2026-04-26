@@ -13,6 +13,8 @@ import { insuranceRouter } from "./insurance.router";
 import { extractionRouter } from "./extraction.router";
 import { budgetRouter } from "./budget.router";
 import { budgetAIRouter } from "./budget.ai.router";
+import { newsRouter } from "./news.router";
+
 
 /**
  * Main Router - Registers all route modules.
@@ -35,6 +37,8 @@ router.route("/api/insurance", insuranceRouter);
 router.route("/api/extract", extractionRouter);
 router.route("/api/budget/ai", budgetAIRouter);
 router.route("/api/budget", budgetRouter);
+router.route("/api/news", newsRouter);
+
 
 // Preview routes
 router.route("/api/preview", healthRouter);
@@ -51,5 +55,7 @@ router.route("/api/preview/insurance", insuranceRouter);
 router.route("/api/preview/extract", extractionRouter);
 router.route("/api/preview/budget/ai", budgetAIRouter);
 router.route("/api/preview/budget", budgetRouter);
+router.route("/api/preview/news", newsRouter);
+
 
 export { router };

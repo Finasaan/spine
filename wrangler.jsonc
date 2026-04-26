@@ -17,11 +17,17 @@
     "enabled": true
   },
   "ai": {
-    "binding": "AI"
+    "binding": "AI",
+    "remote": true,
+    "experimental_remote": true
   },
   "placement": { "mode": "smart" },
   "keep_vars": false,
   "routes": ["finasaan.com/api/*", "www.finasaan.com/api/*"],
+  "triggers": {
+    "crons": ["0 1 * * *"]
+  },
+
 
   // Supabase environment variables (cloud-based)
   // These will be overridden by secrets in production

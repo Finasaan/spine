@@ -43,41 +43,51 @@ export function createModel(
 export async function generateEmbedding(
   ai: Ai,
   text: string,
+  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string }
 ): Promise<number[]> {
-  const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
-    text: [text],
-  })) as { data?: number[][] };
-
-  if (!response.data?.[0]) {
-    throw new Error("Failed to generate embedding: no data returned");
-  }
-
-  return response.data[0];
+  const data = await generateEmbeddings(ai, [text], env);
+  return data[0];
 }
 
-/**
- * Generate embeddings for multiple texts in a single batch request.
- */
 export async function generateEmbeddings(
   ai: Ai,
   texts: string[],
+  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string }
 ): Promise<number[][]> {
   try {
     const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
       text: texts,
     })) as { data?: number[][] };
 
-    if (!response.data) {
-      throw new Error("Failed to generate embeddings: no data returned");
-    }
-
-    return response.data;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes("1031")) {
-      throw new Error(
-        "Workers AI unavailable in local dev. Run with: wrangler dev --remote",
+    if (response.data) return response.data;
+    throw new Error("Failed to generate embeddings: no data returned");
+  } catch (error: any) {
+    if (env?.CLOUDFLARE_API_TOKEN && env?.CLOUDFLARE_ACCOUNT_ID) {
+      const resp = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/baai/bge-large-en-v1.5`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ text: texts }),
+        }
       );
+
+      if (!resp.ok) {
+        const body = await resp.text();
+        throw new Error(`Workers AI direct embedding failed (${resp.status}): ${body.slice(0, 200)}`);
+      }
+
+      const result = await resp.json() as { result?: { data: number[][] } };
+      if (result.result?.data) return result.result.data;
     }
     throw error;
   }
 }
+
+
+
+
+

@@ -20,14 +20,16 @@ export function createAllTools(
   ai: Ai,
   userId: string,
   sessionId: string,
+  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string }
 ) {
   return {
-    ...createKnowledgeTools(supabase, ai, sessionId),
+    ...createKnowledgeTools(supabase, ai, sessionId, env),
     ...createMarketTools(supabase),
     ...createFundsTools(supabase),
     ...createUserTools(supabase, userId),
   };
 }
+
 
 export { createKnowledgeTools } from "./knowledge.tools";
 export { createMarketTools } from "./market.tools";

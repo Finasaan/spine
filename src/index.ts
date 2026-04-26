@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { apiReference } from "@scalar/hono-api-reference";
 import { router } from "./routes";
+import { runNewsCron } from "./services/news.cron.service";
+
 
 /**
  * Spine API - Finasaan Backend Service
@@ -72,4 +74,20 @@ app.onError((err, c) => {
   );
 });
 
-export default app;
+export default {
+  fetch: app.fetch.bind(app),
+  async scheduled(
+    event: ScheduledEvent,
+    env: CloudflareBindings,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    switch (event.cron) {
+      case "0 1 * * *":
+        ctx.waitUntil(runNewsCron(env));
+        break;
+      default:
+        console.warn(`[Scheduled] Unrecognised cron: ${event.cron}`);
+    }
+  },
+};
+
