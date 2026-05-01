@@ -54,11 +54,18 @@ export async function handleManualSync(
   c: Context<{ Bindings: CloudflareBindings }>
 ) {
   try {
-    // This runs the same logic as the daily cron
-    const report = await runNewsCron(c.env);
-    return c.json(successResponse(report));
-  } catch (error) {
+    // Trigger the cron in the background to avoid 504 timeouts
+    // ctx.waitUntil ensures the worker doesn't shut down until the task is done
+    c.executionCtx.waitUntil(
+      runNewsCron(c.env)
+        .then(report => console.log("[ManualSync] Completed:", report))
+        .catch(err => console.error("[ManualSync] Failed:", err))
+    );
 
+    return c.json(successResponse({ 
+      message: "Sync started in background. Check logs for completion details." 
+    }));
+  } catch (error) {
     console.error("[handleManualSync] error:", error);
     return c.json(errorResponse(error), 500);
   }
