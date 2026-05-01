@@ -152,6 +152,56 @@ export function createKnowledgeTools(
       },
     }),
 
+    searchTaxDocs: tool({
+      description:
+        "Search Pakistan taxation documents (Income Tax Ordinance, Rules, and Circulars) using semantic search. Use this for questions about Pakistan tax laws, slabs, exemptions, and official FBR guidelines.",
+      inputSchema: z.object({
+        query: z.string().describe("Search query string (e.g. 'tax slabs for salary', 'pension fund tax credit')"),
+        docType: z.enum(["ordinance", "rules", "circular", "all"]).optional().default("all").describe("Filter by document type"),
+        limit: z.coerce.number().int().min(1).max(10).optional().default(5).describe("Number of chunks to retrieve"),
+      }),
+      execute: async ({ query, docType, limit }) => {
+        try {
+          const embedding = await generateEmbedding(ai, query, env);
+          const { data, error } = await supabase.rpc("search_tax_chunks", {
+            query_embedding: JSON.stringify(embedding),
+            match_limit:     limit ?? 5,
+            filter_doc_type: docType === "all" ? null : docType,
+          });
+
+          if (error) throw new Error(`Tax search failed: ${error.message}`);
+
+          const results = (data || []) as Array<{
+            id: string;
+            text: string;
+            source_name: string;
+            doc_type: string;
+            source_url: string;
+            similarity: number;
+          }>;
+
+          return {
+            query,
+            results: results.map((r) => ({
+              text: r.text,
+              source: r.source_name,
+              type: r.doc_type,
+              url: r.source_url,
+              similarity: Math.round(r.similarity * 1000) / 1000,
+            })),
+            total: results.length,
+          };
+        } catch (err) {
+          return {
+            query,
+            results: [],
+            total: 0,
+            error: err instanceof Error ? err.message : "Tax search failed",
+          };
+        }
+      },
+    }),
+
     queryFinancialTables: tool({
       description:
         "Query structured financial tables (income statements, balance sheets, cash flows, key metrics, etc.) extracted from uploaded company reports. Use this when the user asks about specific financial figures, revenue, profit, assets, liabilities, or any numerical data from annual/quarterly reports. Returns actual structured data with headers and rows — ideal for numerical analysis, period-over-period comparisons, and ratio calculations. Company names and tickers are automatically resolved (e.g. 'NPL' matches 'Nishat Power Limited').",
