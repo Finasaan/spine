@@ -57,12 +57,12 @@ export const psxService = {
     const latestReport = reportData?.[0];
     const financials = latestReport?.financial_report_line_items || [];
 
-    // 5. Fetch Latest Headlines
-    const { data: announcements } = await supabase
-      .from("company_announcements")
-      .select("headline, publish_datetime")
-      .eq("company_id", companyId)
-      .order("publish_datetime", { ascending: false })
+    // 5. Fetch Latest Economic News (with Impact Analysis)
+    const { data: news } = await supabase
+      .from("economic_news")
+      .select("title, ai_summary, impact_analysis, published_at")
+      .contains("affected_tickers", [symbol.toUpperCase()])
+      .order("published_at", { ascending: false })
       .limit(3);
 
     return {
@@ -83,7 +83,11 @@ export const psxService = {
       },
       ratios: ratios?.map(r => ({ key: r.ratio_key, value: r.ratio_value })) || [],
       financials: financials.map(f => ({ label: f.item_label, value: f.item_value })),
-      news: announcements?.map(a => a.headline) || [],
+      news: news?.map(n => ({
+        title: n.title,
+        summary: n.ai_summary,
+        impact: n.impact_analysis
+      })) || [],
       hasDetailedFinancials: (financials?.length || 0) > 0
     };
   },
@@ -94,41 +98,47 @@ export const psxService = {
    */
   async generatePulseSummary(env: CloudflareBindings, context: any) {
     const model = createModel(env.AI_GATEWAY_TOKEN, env.AI_GATEWAY_BASE_URL, {
-      id: GROQ_MODELS["llama-3.3-70b-versatile"].id,
-      name: GROQ_MODELS["llama-3.3-70b-versatile"].name,
+      id: GROQ_MODELS["llama-3.1-8b-instant"].id,
+      name: GROQ_MODELS["llama-3.1-8b-instant"].name,
       provider: "groq",
       gatewayProvider: "groq",
       isPro: false,
       isEnabled: true,
-      supportsToolCalling: true,
+      supportsToolCalling: false,
       contextWindow: 131072,
       maxOutputTokens: 1024,
-      description: "Fast, accurate summary generation"
+      description: "Fast, accurate pulse generation"
     });
 
     const systemPrompt = `You are Finasaan Pulse, a high-speed financial analyst for the Pakistan Stock Exchange.
-Your goal is to provide a concise, data-driven analysis of a stock.
+Your goal is to provide a concise, conversational, and highly insightful "Pulse" on a stock.
 
 CRITICAL RULES:
-1. EVIDENCE-BASED CLAIMS: Every analytical statement MUST be backed by specific data from the context. 
-   - Good: 'Symbol is in a consolidation phase, trading within a narrow range of PKR X to PKR Y for the last 10 days.'
-   - Good: 'Price is 12.5% off its 30D high (PKR X), currently trading at PKR Y.'
-   - Bad: 'The stock looks volatile.' (No evidence)
-2. NO INVESTMENT ADVICE (Buy/Sell/Hold). Use purely descriptive, factual language.
-3. Provide exactly 3 bullet points.
-4. If financials are available, interpret them: 'Net Profit of PKR X represents a Y% YoY growth'.
-5. If financials are missing, focus on the price/volume evidence: 'Current price of PKR X is Z% below the 30D average volume of Y.'
-6. Keep the total response under 100 words. Format as plain text with "-" for bullets.`;
+1. THE PULSE: Combine technical price action (metrics) with real-world context (news/impact).
+2. TONE: Professional, slightly energetic, but objective. Avoid dry listing of numbers; instead, interpret them.
+   - Bad: 'Price is 12% below high.'
+   - Good: 'Symbol is showing resilience, currently holding PKR X despite being 12% off its monthly peak.'
+3. NO INVESTMENT ADVICE. Use descriptive language.
+4. Exactly 3 bullet points.
+5. If news is available, lead with how it affects the stock sentiment or operations.
+6. If financials are available, highlight a key growth or efficiency metric.
+7. Keep it under 100 words. Format as plain text with "-" for bullets.`;
+
+    const newsContext = context.news.length > 0 
+      ? context.news.map((n: any) => `Headline: ${n.title}\nSummary: ${n.summary}\nImpact: ${n.impact}`).join("\n---\n")
+      : "No recent specific news found.";
 
     const userPrompt = `Analyze context for ${context.company.name} (${context.company.symbol}):
 Sector: ${context.company.sector}
-Current Price: ${context.metrics.price} (${context.metrics.changePct} change)
-30D High/Low: ${context.metrics.monthHigh}/${context.metrics.monthLow} 
-Financials (Latest): ${context.financials.length > 0 ? JSON.stringify(context.financials) : "No recent line items"}
-Key Ratios: ${context.ratios.length > 0 ? JSON.stringify(context.ratios) : "No recent ratios available"}
-Recent Headlines: ${context.news.length > 0 ? context.news.join(". ") : "No recent announcements"}
+Current: ${context.metrics.price} (${context.metrics.changePct} change)
+30D Range: ${context.metrics.monthLow} - ${context.metrics.monthHigh}
+Financials: ${context.financials.length > 0 ? JSON.stringify(context.financials) : "N/A"}
+Ratios: ${context.ratios.length > 0 ? JSON.stringify(context.ratios) : "N/A"}
 
-Summary:`;
+RECENT NEWS & IMPACT:
+${newsContext}
+
+Pulse:`;
 
     const { text } = await generateText({
       model,

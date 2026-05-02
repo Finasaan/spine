@@ -35,7 +35,7 @@ export async function extractPerPageTexts(
 ): Promise<string[]> {
   const { extractText } = await import("unpdf");
   const result = await extractText(pdfData);
-  return result.text;
+  return result.text; // per-page array natively
 }
 
 // ============================================================================
@@ -46,53 +46,30 @@ export async function extractPerPageTexts(
  * Detect whether a page is table/numeric-heavy.
  * Used to decide if a selectable-text page should go through vision (Path B)
  * or be treated as plain prose (Path A).
- *
- * NOTE: unpdf's extractText returns each page as a single string (no newlines),
- * so line-based heuristics don't work. We use token-level analysis instead.
  */
 export function isTableHeavyPage(pageText: string): boolean {
-  const trimmed = pageText.trim();
-  if (trimmed.length === 0) return false;
+  const lines = pageText.split("\n").filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return false;
 
-  const tokens = trimmed.match(/\S+/g) || [];
-  if (tokens.length === 0) return false;
+  // 1. High ratio of numeric tokens
+  const numericTokens = (pageText.match(/\b[\d,]+\.?\d*\b/g) || []).length;
+  const totalTokens = (pageText.match(/\S+/g) || []).length;
+  if (totalTokens > 0 && numericTokens / totalTokens > 0.3) return true;
 
-  // 1. High ratio of numeric tokens (numbers, parenthesized negatives, percentages)
-  //    Financial tables have lines like "Revenue 1,234,567 987,654"
-  const numericTokens = tokens.filter((t) =>
-    /^[\d,]+\.?\d*$/.test(t) ||           // plain numbers: 1,234,567 or 42.5
-    /^\([\d,]+\.?\d*\)$/.test(t) ||       // parenthesized negatives: (1,234)
-    /^-[\d,]+\.?\d*$/.test(t) ||          // dash negatives: -1,234
-    /^[\d,]+\.?\d*%$/.test(t)             // percentages: 15.5%
-  ).length;
+  // 2. Pipe-separated table formatting artifacts from unpdf
+  const pipeLines = lines.filter((l) => (l.match(/\|/g) || []).length >= 2)
+    .length;
+  if (pipeLines >= 3) return true;
 
-  const numericRatio = numericTokens / tokens.length;
-  if (numericRatio > 0.20) return true;
-
-  // 2. Absolute count of numeric tokens — financial pages have many numbers
-  //    even if the ratio is diluted by long labels
-  if (numericTokens >= 15) return true;
-
-  // 3. Presence of financial keywords alongside numbers suggests table content
-  const lowerText = trimmed.toLowerCase();
-  const financialKeywords = [
-    "revenue", "profit", "loss", "income", "expense", "assets",
-    "liabilities", "equity", "cash", "dividend", "earnings",
-    "balance sheet", "income statement", "cash flow", "financial position",
-    "total", "net", "gross", "operating", "depreciation", "amortization",
-    "receivable", "payable", "inventory", "share capital",
-    "rupees", "pkr", "rs.", "rs ", "'000", "thousands", "millions",
-  ];
-  const keywordHits = financialKeywords.filter((kw) =>
-    lowerText.includes(kw)
-  ).length;
-
-  // If we have some numbers AND multiple financial keywords, it's likely tabular
-  if (numericTokens >= 5 && keywordHits >= 3) return true;
-
-  // 4. Pipe-separated table formatting (may still appear in some extractors)
-  const pipeCount = (trimmed.match(/\|/g) || []).length;
-  if (pipeCount >= 6) return true;
+  // 3. Multiple lines that are mostly whitespace-separated numbers (column-aligned tables)
+  const numericLineCount = lines.filter((l) => {
+    const tokens = l.trim().split(/\s{2,}/);
+    const numericCount = tokens.filter((t) =>
+      /^[\d,.()\-]+$/.test(t.trim())
+    ).length;
+    return tokens.length >= 3 && numericCount / tokens.length > 0.5;
+  }).length;
+  if (numericLineCount >= 3) return true;
 
   return false;
 }

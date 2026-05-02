@@ -7,8 +7,13 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { SupabaseClient } from "@supabase/supabase-js";
+import { generatePortfolioAISummary } from "../portfolio.ai.service";
 
-export function createUserTools(supabase: SupabaseClient, userId: string) {
+export function createUserTools(
+  supabase: SupabaseClient, 
+  userId: string,
+  env?: { AI_GATEWAY_TOKEN?: string; AI_GATEWAY_BASE_URL?: string }
+) {
   return {
     getUserPortfolio: tool({
       description:
@@ -147,6 +152,26 @@ export function createUserTools(supabase: SupabaseClient, userId: string) {
             total: 0,
             error:
               err instanceof Error ? err.message : "Failed to fetch watchlist",
+          };
+        }
+      },
+    }),
+
+    getPortfolioInsight: tool({
+      description:
+        "Generate an AI-powered portfolio health summary for the authenticated user. Analyzes current holdings, P/L, and recent news affecting held stocks.",
+      inputSchema: z.object({}),
+      execute: async () => {
+        try {
+          const result = await generatePortfolioAISummary(
+            supabase,
+            userId,
+            env || {} 
+          );
+          return result;
+        } catch (err) {
+          return {
+            error: err instanceof Error ? err.message : "Failed to generate portfolio insight",
           };
         }
       },

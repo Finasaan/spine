@@ -15,14 +15,14 @@ declare module "hono" {
  * Extracts the bearer token from the request.
  * Checks the Authorization header first, then falls back to the sb-token HttpOnly cookie.
  */
-function extractToken(c: Context): string | null {
+function extractToken(c: Context, name: string = "sb-token"): string | null {
   const authHeader = c.req.header("Authorization");
-  if (authHeader?.startsWith("Bearer ")) {
+  if (name === "sb-token" && authHeader?.startsWith("Bearer ")) {
     return authHeader.substring(7) || null;
   }
 
   const cookie = c.req.header("Cookie") ?? "";
-  const match = cookie.match(/(?:^|;\s*)sb-token=([^;]+)/);
+  const match = cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
   return match?.[1] ?? null;
 }
 
@@ -46,10 +46,39 @@ export const authMiddleware = createMiddleware<{
   try {
     const supabase = await getSupabaseAdminClient(c.env);
 
-    const {
+    let {
       data: { user },
       error,
     } = await supabase.auth.getUser(token);
+
+    // If token is expired, attempt automatic refresh using refresh token cookie
+    if (error?.message?.includes("expired") || error?.message?.includes("invalid claims")) {
+      const refreshToken = extractToken(c, "sb-refresh-token");
+      
+      if (refreshToken) {
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession({
+          refresh_token: refreshToken,
+        });
+
+        if (!refreshError && refreshData.session && refreshData.user) {
+          const { session, user: refreshedUser } = refreshData;
+          
+          // Update tokens in context
+          user = refreshedUser;
+          
+          // Set new cookies in the response
+          const secure = c.req.url.startsWith("https") ? "; Secure" : "";
+          const cookieOptions = "HttpOnly; Path=/; SameSite=Lax; Max-Age=604800"; // 7 days
+          
+          c.header("Set-Cookie", `sb-token=${session.access_token}${secure}; ${cookieOptions}`);
+          c.header("Set-Cookie", `sb-refresh-token=${session.refresh_token}${secure}; ${cookieOptions}`, { append: true });
+          
+          c.set("user", user);
+          c.set("token", session.access_token);
+          return await next();
+        }
+      }
+    }
 
     if (error || !user) {
       console.error("Token validation error:", error?.message);

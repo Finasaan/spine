@@ -21,6 +21,12 @@ export const GROQ_MODELS = {
     provider: "groq",
     maxTokens: 131072,
   },
+  "llama-3.2-11b-vision-preview": {
+    id: "llama-3.2-11b-vision-preview",
+    name: "Llama 3.2 11B Vision Preview",
+    provider: "groq",
+    maxTokens: 8192,
+  },
   "meta-llama/llama-4-scout-17b-16e-instruct": {
     id: "meta-llama/llama-4-scout-17b-16e-instruct",
     name: "Llama 4 Scout 17B Vision",

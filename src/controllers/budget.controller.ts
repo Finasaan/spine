@@ -222,6 +222,29 @@ export async function deleteTransaction(c: AppContext) {
   }
 }
 
+export async function handleClassifyTransaction(c: AppContext) {
+  try {
+    const description = c.req.query("description");
+    if (!description) return c.json({ success: false, error: "Description required" }, 400);
+
+    const db = await getSupabaseAdminClient(c.env);
+    const user = c.get("user");
+    const categories = await BudgetService.getCategories(db, user.id);
+
+    const classification = await classifyTransaction(
+      c.env.AI_GATEWAY_TOKEN as string,
+      c.env.AI_GATEWAY_BASE_URL as string,
+      description,
+      categories
+    );
+
+    return c.json(successResponse(classification));
+  } catch (err) {
+    console.error("[handleClassifyTransaction] error:", err);
+    return c.json(errorResponse(err), 500);
+  }
+}
+
 export async function getBudgetPlans(c: AppContext) {
   try {
     const db = await getSupabaseAdminClient(c.env);
