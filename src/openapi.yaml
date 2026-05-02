@@ -1695,6 +1695,362 @@ paths:
         '200':
           description: Holding removed
 
+  /budget/dashboard:
+    get:
+      summary: Get budget dashboard metrics
+      operationId: getBudgetDashboard
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Budget dashboard data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      total_income:
+                        type: number
+                      total_expenses:
+                        type: number
+                      savings:
+                        type: number
+                      savings_rate:
+                        type: number
+                      burn_rate:
+                        type: number
+                      daily_allowance:
+                        type: number
+                        nullable: true
+                      days_remaining:
+                        type: integer
+                      category_breakdown:
+                        type: array
+                        items:
+                          type: object
+                      alerts:
+                        type: array
+                        items:
+                          type: object
+
+  /budget/transactions:
+    get:
+      summary: Query transactions
+      operationId: getBudgetTransactions
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+        - name: category_id
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [income, expense]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          type: object
+                      total:
+                        type: integer
+
+    post:
+      summary: Create transaction
+      operationId: createBudgetTransaction
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - category_id
+                - amount
+                - type
+                - date
+                - description
+              properties:
+                category_id:
+                  type: string
+                amount:
+                  type: number
+                type:
+                  type: string
+                  enum: [income, expense]
+                date:
+                  type: string
+                  format: date
+                description:
+                  type: string
+                notes:
+                  type: string
+      responses:
+        '201':
+          description: Transaction created
+
+  /budget/transactions/{id}:
+    put:
+      summary: Update transaction
+      operationId: updateBudgetTransaction
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Transaction updated
+
+    delete:
+      summary: Delete transaction
+      operationId: deleteBudgetTransaction
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transaction deleted
+
+  /budget/categories:
+    get:
+      summary: List accessible categories
+      operationId: getBudgetCategories
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      responses:
+        '200':
+          description: List of categories
+
+  /budget/plans:
+    get:
+      summary: Get monthly budget plans
+      operationId: getBudgetPlans
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: year
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of plans
+
+    post:
+      summary: Upsert budget plan
+      operationId: upsertBudgetPlan
+      tags:
+        - Budget
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - category_id
+                - planned_amount
+                - month
+                - year
+              properties:
+                category_id:
+                  type: string
+                  nullable: true
+                planned_amount:
+                  type: number
+                month:
+                  type: integer
+                year:
+                  type: integer
+      responses:
+        '200':
+          description: Plan updated
+  /budget/ai/query:
+    post:
+      summary: Natural language budget query (Asaan Budgeting)
+      operationId: queryBudgetAI
+      tags:
+        - Asaan Budgeting
+      security:
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  example: "How much did I spend on food last month?"
+                context:
+                  type: object
+                  nullable: true
+      responses:
+        '200':
+          description: AI response with insights or data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  answer:
+                    type: string
+                  data:
+                    type: object
+                    nullable: true
+
+  /budget/ai/insights:
+    get:
+      summary: Get AI spending insights
+      operationId: getBudgetInsights
+      tags:
+        - Asaan Budgeting
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of spending insights
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  insights:
+                    type: array
+                    items:
+                      type: object
+
+  /budget/ai/suggestions:
+    get:
+      summary: Get AI budget suggestions
+      operationId: getBudgetSuggestions
+      tags:
+        - Asaan Budgeting
+      security:
+        - CookieAuth: []
+      parameters:
+        - name: month
+          in: query
+          schema:
+            type: integer
+        - name: year
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: List of budget suggestions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  suggestions:
+                    type: array
+                    items:
+                      type: object
+
 components:
   securitySchemes:
     CookieAuth:

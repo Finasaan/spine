@@ -15,6 +15,7 @@ psxRouter.get("/companies/symbol/:symbol", psxController.getCompanyBySymbol);
 // Stock data endpoints
 psxRouter.get("/companies/:companyId/stock-data", psxController.getStockData);
 psxRouter.get("/companies/:companyId/financials", psxController.getCompanyFinancials);
+psxRouter.get("/companies/symbol/:symbol/ai-summary", psxController.getAISummary);
 
 // Dashboard endpoints
 psxRouter.get("/top-stocks", psxController.getTopStocks);

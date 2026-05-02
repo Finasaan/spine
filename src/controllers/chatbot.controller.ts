@@ -55,6 +55,7 @@ Rules:
 - For PSX stocks: always include ticker symbol, price, and % change when available.
 - For mutual funds: always mention NAV, fund category, and management company.
 - For insurance: always reference the specific policy/company from the knowledge base.
+- For taxation: use searchTaxDocs to query Pakistan tax laws, ordinances, and FBR circulars.
 - Cite your sources at the end of data-heavy responses.
 
 Tool usage strategy:
@@ -71,9 +72,13 @@ Tool usage strategy:
 - For sector-specific stock queries (banking stocks, cement sector): first call listSectors to find the sector ID, then use getTopStocks or searchCompanies with sectorId.
 - For performance trends or historical analysis: use getFundNavHistory (up to 5 years) or getStockHistory (up to 5 years).
 - For insurance, financial literacy, or general knowledge questions: use searchKnowledge with the appropriate domain filter.
+- For taxation questions (slabs, ordinance, rules, exemptions): ALWAYS use searchTaxDocs.
 - Chain multiple tools when needed — e.g., queryFinancialTables to find financial data, then searchKnowledge for qualitative context.
 - For comparison questions: retrieve data for all items being compared, then present in a markdown table.
+- For recent Pakistan economic news, market events, or "what's happening" questions: call getRecentHeadlines first for a broad view, then searchRecentNews for topic-specific semantic retrieval.
+- When citing news, always include the source name and publication date at the end of the response.
 - Always try to answer the query using available tools. Only say you cannot if no combination of tools can produce the answer.
+
 
 Today's date: ${new Date().toLocaleDateString("en-PK", { timeZone: "Asia/Karachi" })}`;
 
@@ -196,7 +201,7 @@ export async function handleStream(
     );
 
     // Create tools — pass session.id so searchConversationDocument is scoped correctly
-    const tools = createAllTools(supabase, c.env.AI, user.id, session.id);
+    const tools = createAllTools(supabase, c.env.AI, user.id, session.id, c.env);
 
     // Log the request being sent to the LLM
     const toolNames = Object.keys(tools);
@@ -218,7 +223,21 @@ export async function handleStream(
     // Stream response
     const result = streamText({
       model,
-      system: SYSTEM_PROMPT,
+      system: (() => {
+        let p = SYSTEM_PROMPT;
+        const pc = (body as any).pageContext;
+        if (pc) {
+          p += `\n\n[CURRENT PAGE CONTEXT]
+The user is currently looking at the webpage: ${pc.url}
+
+Below is the raw text scraped directly from their screen right now. You DO have access to this page because the text is provided to you right here. Do NOT claim you cannot scan or read the page. Use the provided text to answer questions about what they are looking at:
+
+--- START OF SCREEN TEXT ---
+${pc.content ? pc.content : "No text visible."}
+--- END OF SCREEN TEXT ---`;
+        }
+        return p;
+      })(),
       messages: modelMessages,
       tools,
       stopWhen: stepCountIs(8),
