@@ -22,6 +22,7 @@ budgetRouter.get("/transactions", Budget.getTransactions);
 budgetRouter.post("/transactions", Budget.createTransaction);
 budgetRouter.put("/transactions/:id", Budget.updateTransaction);
 budgetRouter.delete("/transactions/:id", Budget.deleteTransaction);
+budgetRouter.get("/classify", Budget.handleClassifyTransaction);
 
 // Budget plans
 budgetRouter.get("/plans", Budget.getBudgetPlans);

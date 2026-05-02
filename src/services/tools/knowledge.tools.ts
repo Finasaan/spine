@@ -38,13 +38,19 @@ async function resolveCompanyNames(
   const tickerMatch = input.match(/\(([A-Z0-9]+)\)/);
   if (tickerMatch) terms.add(tickerMatch[1]);
 
+  // Sanitize a term for use in PostgREST .or() filter values
+  const sanitize = (s: string) => s.replace(/[,.:()\\"]/g, "");
+
   try {
     // Search companies table for matches on any of our terms
     const orClauses = Array.from(terms)
-      .flatMap((t) => [
-        `symbol.ilike.%${t}%`,
-        `company_name.ilike.%${t}%`,
-      ])
+      .flatMap((t) => {
+        const safe = sanitize(t);
+        return [
+          `symbol.ilike."%${safe}%"`,
+          `company_name.ilike."%${safe}%"`,
+        ];
+      })
       .join(",");
 
     const { data } = await supabase
@@ -80,7 +86,7 @@ export function createKnowledgeTools(
   return {
     searchKnowledge: tool({
       description:
-        "Search the Finasaan knowledge base using semantic search. Use this for: insurance products/policies/comparisons, company annual reports, financial literacy topics, regulatory information, and any financial question not answerable by structured stock/fund data tools. This is the primary tool for insurance-related queries.",
+        "Search the Finasaan knowledge base using semantic search. Use this for: insurance products/policies/comparisons, company annual reports/quarterly reports, financial literacy topics, regulatory information, and any financial question not answerable by structured stock/fund data tools. This is the primary tool for insurance-related queries. Supports optional company and period filters to narrow results when the user asks about a specific company or time period.",
       inputSchema: z.object({
         query: z.string().describe("Search query string"),
         domain: z
@@ -89,6 +95,18 @@ export function createKnowledgeTools(
           .default("all")
           .describe(
             "Domain filter: financials, insurance, mutual_funds, or all",
+          ),
+        company: z
+          .string()
+          .optional()
+          .describe(
+            "Company name or ticker to filter results by (e.g. 'PTCL', 'Meezan Bank', 'HBL'). Matches against document metadata. When provided, only documents tagged with this company are returned.",
+          ),
+        period: z
+          .string()
+          .optional()
+          .describe(
+            "Fiscal period to filter by (e.g. 'Q1 2026', '2025', 'FY 2024'). Matches against document metadata.",
           ),
         limit: z.coerce
           .number()
@@ -99,10 +117,17 @@ export function createKnowledgeTools(
           .default(5)
           .describe("Number of results"),
       }),
-      execute: async ({ query, domain, limit }) => {
+      execute: async ({ query, domain, company, period, limit }) => {
         try {
-          const embedding = await generateEmbedding(ai, query, env);
+          // Resolve company name variants for metadata matching
+          let companyFilter: string | null = null;
+          if (company?.trim()) {
+            const names = await resolveCompanyNames(supabase, company.trim());
+            // Use the longest resolved name for best metadata match
+            companyFilter = names.reduce((a, b) => a.length > b.length ? a : b, names[0]);
+          }
 
+          const embedding = await generateEmbedding(ai, query, env);
           const vectorStr = JSON.stringify(embedding);
 
           const { data, error } = await supabase.rpc(
@@ -111,7 +136,9 @@ export function createKnowledgeTools(
               query_embedding: vectorStr,
               match_limit: limit ?? 5,
               filter_domain: domain === "all" ? null : (domain ?? null),
-              min_similarity: 0.45,
+              min_similarity: 0.35,
+              filter_company: companyFilter,
+              filter_period: period?.trim() || null,
             },
           );
 
@@ -131,6 +158,8 @@ export function createKnowledgeTools(
           return {
             query,
             domain: domain ?? "all",
+            company: companyFilter,
+            period: period || null,
             results: results.map((r) => ({
               id: r.id,
               domain: r.domain,
@@ -144,6 +173,8 @@ export function createKnowledgeTools(
           return {
             query,
             domain: domain ?? "all",
+            company: company || null,
+            period: period || null,
             results: [],
             total: 0,
             error: err instanceof Error ? err.message : "Search failed",
@@ -259,11 +290,16 @@ export function createKnowledgeTools(
           // Company filter with automatic name resolution
           if (company?.trim()) {
             const names = await resolveCompanyNames(supabase, company.trim());
+            // Sanitize for PostgREST .or() reserved characters
+            const sanitize = (s: string) => s.replace(/[,.:()\\"]/g, "");
             const orClauses = names
-              .flatMap((n) => [
-                `company_name.ilike.%${n}%`,
-                `company_id.ilike.%${n}%`,
-              ])
+              .flatMap((n) => {
+                const safe = sanitize(n);
+                return [
+                  `company_name.ilike."%${safe}%"`,
+                  `company_id.ilike."%${safe}%"`,
+                ];
+              })
               .join(",");
             query = query.or(orClauses);
           }
@@ -273,11 +309,10 @@ export function createKnowledgeTools(
             query = query.eq("table_type", tableType);
           }
 
-          // Fiscal period filter (partial match)
+          // Fiscal period filter (partial match on TEXT column)
           if (fiscalPeriod?.trim()) {
-            query = query.or(
-              `fiscal_period.ilike.%${fiscalPeriod}%,fiscal_period_end::text.ilike.%${fiscalPeriod}%`,
-            );
+            const fp = fiscalPeriod.trim();
+            query = query.ilike("fiscal_period", `%${fp}%`);
           }
 
           const { data, error } = await query;

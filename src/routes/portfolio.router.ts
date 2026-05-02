@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { authMiddleware } from "../middleware/auth.middleware";
 import { portfolioController } from "../controllers/portfolio.controller";
+import { handlePortfolioAISummary } from "../controllers/portfolio.ai.controller";
 
 /**
  * Portfolio Router
@@ -23,6 +24,9 @@ const portfolioRouter = new Hono<{ Bindings: CloudflareBindings }>();
 
 // All portfolio routes require auth
 portfolioRouter.use("/*", authMiddleware);
+
+// AI Summary (Global)
+portfolioRouter.get("/ai-summary", handlePortfolioAISummary);
 
 // Portfolio CRUD
 portfolioRouter.get("/", portfolioController.listPortfolios);

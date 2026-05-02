@@ -289,8 +289,8 @@ export async function uploadConversationDocument(
   if (!file.name.toLowerCase().endsWith(".pdf")) {
     throw new Error("Only PDF files are supported");
   }
-  if (file.size > 10 * 1024 * 1024) {
-    throw new Error("File too large — maximum 10MB");
+  if (file.size > 50 * 1024 * 1024) {
+    throw new Error("File too large — maximum 50MB");
   }
 
   // Extract text

@@ -88,7 +88,7 @@ export interface ExtractedTableRecord {
 // ============================================================================
 
 const EXTRACTION_MODEL = "llama-3.3-70b-versatile";
-const VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
+const VISION_MODEL = "llama-3.2-11b-vision-preview";
 
 /**
  * System prompt for text-based table structuring (insurance pipeline).
@@ -329,7 +329,6 @@ export async function extractPageViaVision(
         ],
         temperature: 0.1,
         max_tokens: 3500,
-        response_format: { type: "json_object" },
       }),
     }
   );
@@ -350,10 +349,13 @@ export async function extractPageViaVision(
     throw new Error(`Groq error during vision extraction: ${result.error.message}`);
   }
 
-  const content = result.choices?.[0]?.message?.content?.trim();
-  if (!content) {
+  const raw = result.choices?.[0]?.message?.content?.trim();
+  if (!raw) {
     throw new Error("No response from vision model");
   }
+
+  // Strip markdown fences (vision models often wrap JSON in ```json ... ```)
+  const content = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
 
   const parsed = JSON.parse(content) as VisionPageResult;
 
@@ -451,6 +453,46 @@ export async function storeExtractedTable(
   }
 
   return data.id;
+}
+
+/**
+ * Store multiple structured table records in a single batch.
+ * Dramatically reduces subrequest count for long documents.
+ */
+export async function storeExtractedTables(
+  supabase: SupabaseClient,
+  records: ExtractedTableRecord[]
+): Promise<string[]> {
+  if (records.length === 0) return [];
+
+  const { data, error } = await supabase
+    .from("extracted_tables")
+    .insert(
+      records.map((record) => ({
+        source_document_id: record.source_document_id,
+        source_type: record.source_type,
+        company_id: record.company_id,
+        company_name: record.company_name,
+        table_name: record.table_name,
+        table_type: record.table_type,
+        fiscal_period: record.fiscal_period,
+        fiscal_period_end: record.fiscal_period_end,
+        currency: record.currency,
+        table_unit: record.table_unit,
+        comparative: record.comparative,
+        headers: record.headers,
+        rows: record.rows,
+        raw_table_text: record.raw_table_text,
+        extraction_model: record.extraction_model,
+      }))
+    )
+    .select("id");
+
+  if (error) {
+    throw new Error(`Failed to store extracted tables batch: ${error.message}`);
+  }
+
+  return (data || []).map((row) => row.id);
 }
 
 /**

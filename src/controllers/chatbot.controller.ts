@@ -25,6 +25,7 @@ import {
   isVisionTableValid,
   buildExtractedTableRecord,
   storeExtractedTable,
+  storeExtractedTables,
 } from "../services/extraction.service";
 import {
   extractPerPageTexts,
@@ -42,7 +43,6 @@ import modelsConfig from "../config/models.json";
 
 const MODELS: ModelConfig[] = modelsConfig as ModelConfig[];
 const DEFAULT_MODEL_ID = "gemini-2.5-flash-lite";
-
 const SYSTEM_PROMPT = `You are FinasaanGPT, an AI financial intelligence assistant for Finasaan — Pakistan's premier investment platform covering PSX stocks, mutual funds, and insurance.
 
 Persona: Direct, precise, data-driven. You speak like a Bloomberg terminal with manners.
@@ -60,10 +60,12 @@ Rules:
 
 Tool usage strategy:
 - When the user asks about an uploaded document or file: ALWAYS call searchConversationDocument first.
-- For specific financial figures from company reports (revenue, profit, assets, EPS, balance sheet items, income statement line items, cash flows): ALWAYS use queryFinancialTables. This tool has structured numerical data — use it for precise numbers and comparisons.
-- For general information, qualitative analysis, management commentary, or notes from reports: use searchKnowledge with domain='financials'.
-- For financial analysis questions: chain queryFinancialTables (for the numbers) with searchKnowledge (for qualitative context). Present numbers in markdown tables.
-- Company name matching: queryFinancialTables automatically resolves tickers and company name variations (e.g. "NPL" → "Nishat Power Limited", "HBL" → "Habib Bank Limited"). You do NOT need to resolve names yourself — just pass whatever the user said.
+- For specific financial figures from company reports (revenue, profit, assets, EPS, balance sheet items, income statement line items, cash flows): ALWAYS use queryFinancialTables first. This tool has structured numerical data — use it for precise numbers and comparisons.
+- IMPORTANT: If queryFinancialTables returns empty or no results for a company, ALWAYS follow up with searchKnowledge using company and period filters. The data may be in the knowledge base as unstructured text rather than extracted tables.
+- For general information, qualitative analysis, management commentary, or notes from reports: use searchKnowledge with domain='financials' and pass the company name and period as filters.
+- searchKnowledge supports company and period filters — ALWAYS pass these when the user asks about a specific company or time period. Example: searchKnowledge({query: "operating profit", domain: "financials", company: "PTCL", period: "Q1 2026"}).
+- For financial analysis questions: chain queryFinancialTables (for structured numbers) with searchKnowledge (for qualitative context + unstructured numbers). Present numbers in markdown tables.
+- Company name matching: Both queryFinancialTables and searchKnowledge automatically resolve tickers and company name variations (e.g. "NPL" → "Nishat Power Limited", "PTCL" → "Pakistan Telecommunication Company Ltd"). You do NOT need to resolve names yourself — just pass whatever the user said.
 - If queryFinancialTables returns no results for a company, try searchCompanies to verify the company exists, then retry with the exact company_name from the result.
 - For "best performing", "top", or ranking questions: use queryMutualFunds or getTopStocks with appropriate sortBy and sortOrder desc.
 - For period-based returns (e.g. "best fund over 5 years"): use queryMutualFunds with sortBy='return' and returnPeriodMonths (12=1yr, 36=3yr, 60=5yr).
@@ -78,9 +80,7 @@ Tool usage strategy:
 - For recent Pakistan economic news, market events, or "what's happening" questions: call getRecentHeadlines first for a broad view, then searchRecentNews for topic-specific semantic retrieval.
 - When citing news, always include the source name and publication date at the end of the response.
 - Always try to answer the query using available tools. Only say you cannot if no combination of tools can produce the answer.
-
-
-Today's date: ${new Date().toLocaleDateString("en-PK", { timeZone: "Asia/Karachi" })}`;
+`;
 
 // ============================================
 // Helper
@@ -112,6 +112,16 @@ export async function handleStream(
     const user = c.get("user");
     const supabase = await getSupabaseAdminClient(c.env);
     const modelConfig = resolveModel(modelId);
+
+    // Dynamic system prompt with current date/time
+    const now = new Date();
+    const currentDateTime = now.toLocaleString("en-PK", {
+      timeZone: "Asia/Karachi",
+      dateStyle: "full",
+      timeStyle: "long",
+    });
+    const fullSystemPrompt = `${SYSTEM_PROMPT}\n\nCurrent Date and Time (Karachi): ${currentDateTime}`;
+
     const model = createModel(
       c.env.AI_GATEWAY_TOKEN,
       c.env.AI_GATEWAY_BASE_URL,
@@ -224,7 +234,7 @@ export async function handleStream(
     const result = streamText({
       model,
       system: (() => {
-        let p = SYSTEM_PROMPT;
+        let p = fullSystemPrompt;
         const pc = (body as any).pageContext;
         if (pc) {
           p += `\n\n[CURRENT PAGE CONTEXT]
@@ -367,6 +377,9 @@ export async function handleUploadPDF(
     const company = formData.get("company") as string | null;
     const period = formData.get("period") as string | null;
     const docType = formData.get("doc_type") as string | null;
+    const policyName = formData.get("policy_name") as string | null;
+    const sourceName = formData.get("source_name") as string | null;
+    const domain = (formData.get("domain") as string | null) || "financials";
 
     // 2. Validate
     if (!file) {
@@ -375,9 +388,9 @@ export async function handleUploadPDF(
     if (!file.name.toLowerCase().endsWith(".pdf")) {
       return c.json({ error: "Only PDF files are allowed" }, 400);
     }
-    const maxSize = 10 * 1024 * 1024;
+    const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
-      return c.json({ error: "File too large. Maximum size is 10MB" }, 400);
+      return c.json({ error: "File too large. Maximum size is 50MB" }, 400);
     }
 
     console.log(`[UploadPDF] Processing: ${file.name} (${file.size} bytes)`);
@@ -423,9 +436,14 @@ export async function handleUploadPDF(
     console.log(`[UploadPDF] Scanned: ${isScanned}, fullText chars: ${countNonWhitespace(fullText)}, pages: ${totalPages}`);
 
     // 7. Per-page hybrid classification loop
+    // CF Workers free plan: 50 subrequests/invocation. Each vision call is 1 fetch().
+    // Budget: 1 dedup + 1 table batch insert + 1 prose insert = 3 fixed. Leave 40 for vision.
+    const MAX_VISION_PAGES = 40;
     const proseBuffer: string[] = [];
-    const extractedTableIds: string[] = [];
+    const tablesToStore: any[] = [];
     let visionPagesProcessed = 0;
+    let visionPagesAttempted = 0;
+    let visionPagesCapped = 0;
 
     for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
       const pageText = pageTexts[pageIndex];
@@ -441,6 +459,19 @@ export async function handleUploadPDF(
 
       if (isScanned || tableHeavy) {
         // --- Path B / Path C: Vision extraction ---
+
+        // Guard: each vision call is one fetch() subrequest. Cap at MAX_VISION_PAGES
+        // so we never exceed the CF Workers subrequest limit on large documents.
+        if (visionPagesAttempted >= MAX_VISION_PAGES) {
+          console.log(
+            `[UploadPDF] Vision cap (${MAX_VISION_PAGES}) reached at page ${pageNumber}, accumulating as prose`
+          );
+          visionPagesCapped++;
+          if (pageText.trim().length > 0) proseBuffer.push(pageText);
+          continue;
+        }
+        visionPagesAttempted++;
+
         let base64PNG: string | null = null;
         try {
           base64PNG = await renderPageToBase64PNG(pdfData, pageNumber);
@@ -482,24 +513,16 @@ export async function handleUploadPDF(
           proseBuffer.push(visionResult.prose);
         }
 
-        // Store valid tables
+        // Collect valid tables for batch storage
         for (const table of visionResult.tables) {
           if (isVisionTableValid(table)) {
-            try {
-              const record = buildExtractedTableRecord(
-                table,
-                documentHash,
-                company,
-                docType
-              );
-              const tableId = await storeExtractedTable(supabase, record);
-              extractedTableIds.push(tableId);
-            } catch (storeErr) {
-              console.warn(
-                `[UploadPDF] Failed to store extracted table on page ${pageNumber}:`,
-                storeErr instanceof Error ? storeErr.message : storeErr
-              );
-            }
+            const record = buildExtractedTableRecord(
+              table,
+              documentHash,
+              company,
+              docType
+            );
+            tablesToStore.push(record);
           } else {
             console.log(
               `[UploadPDF] Vision table invalid on page ${pageNumber}, skipping: ${table.table_name || "(unnamed)"}`
@@ -511,6 +534,20 @@ export async function handleUploadPDF(
         if (pageText.trim().length > 0) {
           proseBuffer.push(pageText);
         }
+      }
+    }
+
+    // 7.5 Bulk store extracted tables
+    let extractedTableIds: string[] = [];
+    if (tablesToStore.length > 0) {
+      try {
+        console.log(`[UploadPDF] Batch storing ${tablesToStore.length} tables...`);
+        extractedTableIds = await storeExtractedTables(supabase, tablesToStore);
+      } catch (storeErr) {
+        console.error(
+          `[UploadPDF] Bulk table storage failed:`,
+          storeErr instanceof Error ? storeErr.message : storeErr
+        );
       }
     }
 
@@ -544,6 +581,8 @@ export async function handleUploadPDF(
             company: company || undefined,
             period: period || undefined,
             doc_type: docType || undefined,
+            policy_name: policyName || undefined,
+            source_name: sourceName || undefined,
             filename: file.name,
           } as Record<string, unknown>,
         }));
@@ -552,7 +591,7 @@ export async function handleUploadPDF(
           supabase,
           documents,
           documentHash,
-          "financials"
+          domain
         );
       }
     }
@@ -575,6 +614,7 @@ export async function handleUploadPDF(
         total_pages: totalPages,
         scanned: isScanned,
         vision_pages_processed: visionPagesProcessed,
+        vision_pages_capped: visionPagesCapped,
         prose_chunks_stored: storedCount,
         tables_extracted: extractedTableIds.length,
       },

@@ -26,7 +26,7 @@ export function createAllTools(
     ...createKnowledgeTools(supabase, ai, sessionId, env),
     ...createMarketTools(supabase),
     ...createFundsTools(supabase),
-    ...createUserTools(supabase, userId),
+    ...createUserTools(supabase, userId, env as any),
   };
 }
 
