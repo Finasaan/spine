@@ -250,8 +250,8 @@ ${pc.content ? pc.content : "No text visible."}
       })(),
       messages: modelMessages,
       tools,
-      stopWhen: stepCountIs(8),
-      temperature: 0.7,
+      stopWhen: stepCountIs(12),
+      temperature: 0.1,
       maxTokens: modelConfig.maxOutputTokens,
       // Repair tool calls where the LLM sends strings instead of numbers/booleans
       experimental_repairToolCall: async ({ toolCall, error }) => {
