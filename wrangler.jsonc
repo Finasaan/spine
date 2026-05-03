@@ -78,7 +78,7 @@
 
   // Non-secret vars — override locally via .dev.vars, set in CF dashboard for production
   "vars": {
-    "AI_GATEWAY_BASE_URL": ""
+    "AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/345590cd19a379d6bf1008c6a7860451/chatbot-preview/compat"
   },
 
   // dev configuration
