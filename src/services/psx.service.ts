@@ -148,5 +148,162 @@ Pulse:`;
     });
 
     return text.trim();
-  }
+  },
+
+  /**
+   * Pull insights and key figures from ingested-document chunks (finasaan_documents)
+   * tagged with this company. Returns null when no chunks exist for the company —
+   * the caller should treat that as "no documents ingested, render nothing".
+   *
+   * Llama extracts:
+   *   - 2-3 short bullets of qualitative insight
+   *   - 4-6 concrete figures (label, value, period) for the Company Information section
+   */
+  async getDocumentInsights(
+    supabase: SupabaseClient,
+    env: CloudflareBindings,
+    companyName: string,
+    symbol: string,
+  ): Promise<{
+    insights: string[];
+    keyFigures: Array<{ label: string; value: string; period: string | null }>;
+    trendNarrative: string | null;
+    sources: Array<{ filename: string; period: string | null }>;
+  } | null> {
+    // Fetch the most recent chunks tagged with this company. We use ilike on
+    // metadata->>company so the resolver-stored canonical name matches.
+    const { data: chunks } = await supabase
+      .from("finasaan_documents")
+      .select("content, metadata")
+      .eq("domain", "financials")
+      .filter("metadata->>company", "ilike", `%${companyName}%`)
+      .order("id", { ascending: false })
+      .limit(12);
+
+    if (!chunks || chunks.length === 0) return null;
+
+    // Collect unique sources (filename + period) for citation
+    const sourceMap = new Map<string, { filename: string; period: string | null }>();
+    for (const ch of chunks) {
+      const meta = (ch.metadata || {}) as Record<string, unknown>;
+      const filename = (meta.filename as string) || "unknown.pdf";
+      const period = (meta.period as string) || null;
+      const key = `${filename}|${period ?? ""}`;
+      if (!sourceMap.has(key)) sourceMap.set(key, { filename, period });
+    }
+    const sources = Array.from(sourceMap.values()).slice(0, 4);
+
+    // Build the LLM prompt — feed it the chunks verbatim and ask for structured output.
+    const corpus = chunks
+      .map((ch, i) => {
+        const meta = (ch.metadata || {}) as Record<string, unknown>;
+        const period = (meta.period as string) || "unknown period";
+        return `--- chunk ${i + 1} (${period}) ---\n${ch.content}`;
+      })
+      .join("\n\n");
+
+    const model = createModel(env.AI_GATEWAY_TOKEN, env.AI_GATEWAY_BASE_URL, {
+      id: GROQ_MODELS["llama-3.3-70b-versatile"].id,
+      name: GROQ_MODELS["llama-3.3-70b-versatile"].name,
+      provider: "groq",
+      gatewayProvider: "groq",
+      isPro: false,
+      isEnabled: true,
+      supportsToolCalling: false,
+      contextWindow: 131072,
+      maxOutputTokens: 1024,
+      description: "Document insight extraction",
+    });
+
+    const systemPrompt = `You read excerpts from a Pakistan-listed company's filed financial report and extract three things in strict JSON.
+
+Output ONLY a single JSON object with this shape — no preamble, no code fence, no commentary:
+{
+  "insights": ["bullet 1", "bullet 2", "bullet 3"],
+  "keyFigures": [
+    {"label": "Profit After Tax", "value": "Rs 23.4 billion", "period": "Q1 2026"},
+    {"label": "EPS", "value": "Rs 13.00", "period": "Q1 2026"}
+  ],
+  "trendNarrative": "Margins are widening as interest income outpaces operating costs, while the deposit base continues to expand quarter-over-quarter."
+}
+
+Rules:
+- insights: 2 to 3 short bullets. Each is one sentence. Lead with what changed or what the report says — not generic prose.
+- keyFigures: 4 to 6 line items the report actually states (PAT, EPS, ROE, deposits, revenue, dividend, etc). Keep value as written including currency and unit. Use null for period when unclear.
+- trendNarrative: ONE or TWO sentences (max ~45 words) that interpret what the keyFigures suggest about the company's trajectory — direction of growth, margin movement, balance-sheet expansion or contraction, momentum vs prior period. Describe the trend; do NOT recommend any action and do NOT use words like "buy", "sell", "hold", "invest", "investor", "recommend", "should", "outlook", "bullish", "bearish". Read like a neutral analyst describing the slope, not pitching the stock. If the excerpts do not support any trend statement, return an empty string.
+- Do NOT invent numbers. If a figure is not in the excerpts, leave it out.
+- Do NOT include investment advice or speculation about price.
+- Output empty arrays / empty string if the excerpts contain no extractable financial content. Never return prose outside the JSON.`;
+
+    const userPrompt = `Company: ${companyName} (${symbol})
+
+Excerpts from the most recent ingested report(s):
+
+${corpus}
+
+JSON:`;
+
+    let parsed: {
+      insights?: unknown;
+      keyFigures?: unknown;
+      trendNarrative?: unknown;
+    } = {};
+    try {
+      const { text } = await generateText({
+        model,
+        system: systemPrompt,
+        prompt: userPrompt,
+        temperature: 0.1,
+      });
+
+      // Strip any stray ```json fences the model might emit despite instructions
+      const cleaned = text
+        .trim()
+        .replace(/^```(?:json)?\s*/i, "")
+        .replace(/\s*```\s*$/i, "")
+        .trim();
+
+      parsed = JSON.parse(cleaned);
+    } catch {
+      return null;
+    }
+
+    const insights = Array.isArray(parsed.insights)
+      ? (parsed.insights as unknown[])
+          .filter((s): s is string => typeof s === "string" && s.trim().length > 0)
+          .slice(0, 3)
+      : [];
+
+    const keyFigures = Array.isArray(parsed.keyFigures)
+      ? (parsed.keyFigures as Array<Record<string, unknown>>)
+          .filter(
+            (f) =>
+              typeof f.label === "string" &&
+              typeof f.value === "string" &&
+              (f.label as string).trim().length > 0 &&
+              (f.value as string).trim().length > 0,
+          )
+          .slice(0, 6)
+          .map((f) => ({
+            label: (f.label as string).trim(),
+            value: (f.value as string).trim(),
+            period:
+              typeof f.period === "string" && (f.period as string).trim().length > 0
+                ? (f.period as string).trim()
+                : null,
+          }))
+      : [];
+
+    const rawNarrative =
+      typeof parsed.trendNarrative === "string" ? parsed.trendNarrative.trim() : "";
+    // Belt-and-suspenders: if the model slipped in an advice word despite the prompt,
+    // drop the narrative rather than show it. Keeps the rest of the payload usable.
+    const advicePattern = /\b(buy|sell|hold|invest|investor|recommend|should|bullish|bearish|outlook)\b/i;
+    const trendNarrative =
+      rawNarrative.length > 0 && !advicePattern.test(rawNarrative) ? rawNarrative : null;
+
+    if (insights.length === 0 && keyFigures.length === 0 && !trendNarrative) return null;
+
+    return { insights, keyFigures, trendNarrative, sources };
+  },
 };

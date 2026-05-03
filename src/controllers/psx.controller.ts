@@ -334,6 +334,44 @@ export const psxController = {
   },
 
   /**
+   * Pull insights + key figures from ingested company reports.
+   * Returns `data: null` (success: true) when no documents exist for the company —
+   * the client renders nothing in that case.
+   */
+  getDocumentInsights: async (c: AppContext) => {
+    try {
+      const supabase = await getSupabaseClient(c.env);
+      const symbol = c.req.param("symbol");
+      const { psxService } = await import("../services/psx.service");
+
+      const { data: company, error: cErr } = await supabase
+        .from("companies")
+        .select("id, symbol, company_name")
+        .eq("symbol", symbol.toUpperCase())
+        .single();
+
+      if (cErr || !company) {
+        return c.json({ success: false, error: "Company not found" }, 404);
+      }
+
+      const result = await psxService.getDocumentInsights(
+        supabase,
+        c.env,
+        company.company_name || symbol,
+        symbol,
+      );
+
+      return c.json({
+        success: true,
+        data: result,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      return c.json(errorResponse(err), 500);
+    }
+  },
+
+  /**
    * Get AI-generated "Pulse" summary for a company
    */
   getAISummary: async (c: AppContext) => {

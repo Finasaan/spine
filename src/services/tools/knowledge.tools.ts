@@ -235,7 +235,7 @@ export function createKnowledgeTools(
 
     queryFinancialTables: tool({
       description:
-        "Query structured financial tables (income statements, balance sheets, cash flows, key metrics, etc.) extracted from uploaded company reports. Use this when the user asks about specific financial figures, revenue, profit, assets, liabilities, or any numerical data from annual/quarterly reports. Returns actual structured data with headers and rows. Company names and tickers are automatically resolved. IMPORTANT: This tool has an automatic fallback to semantic knowledge search if no structured tables are found.",
+        "Query structured financial tables (income statements, balance sheets, cash flows, key metrics, etc.) extracted from uploaded company reports. Use this when the user asks about specific financial figures, revenue, profit, assets, liabilities, or any numerical data from annual/quarterly reports. Returns actual structured data with headers and rows. Company names and tickers are automatically resolved. If no structured tables are found, the response will contain a `fallbackResults` array with relevant ingested-document chunks tagged with this company/period — treat those as authoritative source material and answer from them; do NOT report that no data exists when fallbackResults is non-empty.",
       inputSchema: z.object({
         company: z
           .string()
@@ -328,35 +328,40 @@ export function createKnowledgeTools(
           const tables = (data || []) as Array<Record<string, unknown>>;
 
           // --- SMART FALLBACK ---
-          // If no structured tables found, try a semantic search in the knowledge base
-          if (tables.length === 0) {
-            const searchQuery = `${company || ""} ${fiscalPeriod || ""} financials profit revenue assets`.trim();
-            const embedding = await generateEmbedding(ai, searchQuery, env);
-            
-            const { data: kbData, error: kbError } = await supabase.rpc(
-              "search_finasaan_documents",
-              {
-                query_embedding: JSON.stringify(embedding),
-                match_limit: limit ?? 5,
-                filter_domain: "financials",
-                min_similarity: 0.32, // Slightly lower for broader fallback
-                filter_company: resolvedCompanyName,
-                filter_period: fiscalPeriod?.trim() || null,
-              },
-            );
+          // If no structured tables, fetch ingested-document chunks tagged with
+          // the same company (and optional period) directly from finasaan_documents.
+          // Bypasses semantic ranking — when the caller has already specified
+          // company+period, metadata equality is the right tool, not similarity.
+          if (tables.length === 0 && resolvedCompanyName) {
+            const trimmedPeriod = fiscalPeriod?.trim();
 
-            if (!kbError && kbData && (kbData as any[]).length > 0) {
+            let q = supabase
+              .from("finasaan_documents")
+              .select("content, metadata, source_url")
+              .eq("domain", "financials")
+              .filter("metadata->>company", "ilike", `%${resolvedCompanyName}%`);
+
+            if (trimmedPeriod) {
+              q = q.filter("metadata->>period", "ilike", `%${trimmedPeriod}%`);
+            }
+
+            const { data: kbData, error: kbError } = await q
+              .order("id", { ascending: false })
+              .limit(limit ?? 5);
+
+            if (!kbError && kbData && kbData.length > 0) {
               return {
                 company: company || null,
                 tableType: tableType ?? "all",
                 fiscalPeriod: fiscalPeriod || null,
-                fallbackResults: (kbData as any[]).map(r => ({
-                  content: r.content,
-                  metadata: r.metadata,
-                  similarity: r.similarity
-                })),
-                note: "No structured tables found. Returning relevant unstructured data from the knowledge base.",
-                total: (kbData as any[]).length,
+                fallbackResults: (kbData as Array<Record<string, unknown>>).map(
+                  (r) => ({
+                    content: r.content,
+                    metadata: r.metadata,
+                  }),
+                ),
+                note: "No structured tables found. Returning ingested-document chunks tagged with this company/period from the knowledge base.",
+                total: kbData.length,
               };
             }
           }
