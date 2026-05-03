@@ -1,6 +1,17 @@
 import { Hono } from "hono";
 import { authMiddleware } from "../../middleware/auth.middleware";
-import { login, signup, logout, me, refresh, oauthGoogleRedirect, oauthCallback } from "../../controllers/auth";
+import {
+    login,
+    signup,
+    logout,
+    me,
+    refresh,
+    oauthGoogleRedirect,
+    oauthCallback,
+    changePassword,
+    forgotPassword,
+    resetPassword,
+} from "../../controllers/auth";
 
 /**
  * Auth Router
@@ -19,6 +30,11 @@ authRouter.post("/logout", logout);
 
 // Token refresh — no authMiddleware because the access token may be expired
 authRouter.post("/refresh", refresh);
+
+// Password management
+authRouter.post("/change-password", authMiddleware, changePassword);
+authRouter.post("/forgot-password", forgotPassword);
+authRouter.post("/reset-password", resetPassword);
 
 // OAuth
 authRouter.get("/oauth/google", oauthGoogleRedirect);
