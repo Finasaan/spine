@@ -42,6 +42,11 @@
       "binding": "SUPABASE_ANON_KEY_PRODUCTION",
       "store_id": "78b3cb561b5149d89eb3a1ef2a126438",
       "secret_name": "SUPABASE_ANON_KEY_PRODUCTION"
+    },
+    {
+      "binding": "SUPABASE_SERVICE_ROLE_KEY_PRODUCTION",
+      "store_id": "78b3cb561b5149d89eb3a1ef2a126438",
+      "secret_name": "SUPABASE_SERVICE_ROLE_KEY_PRODUCTION"
     }
   ],
 
