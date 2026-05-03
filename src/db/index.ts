@@ -1,1 +1,1 @@
-export { getSupabaseClient, getSupabaseAdminClient } from "./client";
+export { getSupabaseClient, getSupabaseAdminClient, getSupabaseAuthCredentials } from "./client";

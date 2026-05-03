@@ -1,4 +1,5 @@
 import type { AppContext } from "../../types";
+import { getSupabaseAuthCredentials } from "../../db";
 
 const COOKIE_NAME = "sb-token";
 const REFRESH_COOKIE_NAME = "sb-refresh-token";
@@ -28,8 +29,7 @@ export async function refresh(c: AppContext) {
         return c.json({ success: false, error: "No refresh token" }, 401);
     }
 
-    const supabaseUrl = c.env.SUPABASE_URL ?? "";
-    const supabaseKey = c.env.SUPABASE_KEY ?? "";
+    const { url: supabaseUrl, anonKey: supabaseKey } = await getSupabaseAuthCredentials(c.env);
 
     // Call GoTrue's token endpoint directly — the supabase-js client can't be
     // used here because it has autoRefreshToken:false and no persisted session.

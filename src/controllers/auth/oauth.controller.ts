@@ -1,5 +1,5 @@
 import type { AppContext } from "../../types";
-import { getSupabaseAdminClient } from "../../db";
+import { getSupabaseAdminClient, getSupabaseAuthCredentials } from "../../db";
 
 const COOKIE_NAME = "sb-token";
 const REFRESH_COOKIE_NAME = "sb-refresh-token";
@@ -46,7 +46,7 @@ function base64url(bytes: Uint8Array): string {
  * redirects the browser to core's /auth/callback with ?code=<GoTrue_UUID>.
  */
 export async function oauthGoogleRedirect(c: AppContext) {
-    const supabaseUrl = c.env.SUPABASE_URL ?? "";
+    const { url: supabaseUrl } = await getSupabaseAuthCredentials(c.env);
     const redirectTo = c.req.query("redirectTo") ?? "";
 
     const codeVerifier = await generateCodeVerifier();
@@ -100,8 +100,7 @@ export async function oauthCallback(c: AppContext) {
         return c.redirect(`${origin}/login?error=auth_failed`);
     }
 
-    const supabaseUrl = c.env.SUPABASE_URL ?? "";
-    const supabaseKey = c.env.SUPABASE_KEY ?? "";
+    const { url: supabaseUrl, anonKey: supabaseKey } = await getSupabaseAuthCredentials(c.env);
 
     // Exchange the GoTrue auth code + verifier for tokens.
     const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=pkce`, {

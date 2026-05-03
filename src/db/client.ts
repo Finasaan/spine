@@ -27,6 +27,21 @@ async function getSecretValue(value: any): Promise<string | null> {
 }
 
 /**
+ * Resolves the Supabase URL + anon key for the current environment, handling
+ * both plain string env vars (dev) and Secrets Store Fetcher bindings (prod/preview).
+ *
+ * Exported for direct use by routes that talk to GoTrue over raw fetch
+ * (OAuth PKCE flow, refresh token rotation) and can't go through supabase-js.
+ */
+export async function getSupabaseAuthCredentials(env: any): Promise<{
+  url: string;
+  anonKey: string;
+}> {
+  const config = await getSupabaseConfig(env);
+  return { url: config.url, anonKey: config.key };
+}
+
+/**
  * Environment-aware Supabase configuration
  * Determines which environment variables to use based on the deployment context
  */
