@@ -296,7 +296,9 @@ export const psxController = {
             id,
             symbol,
             company_name,
-            sector_id
+            sectors (
+              name
+            )
           )
         `)
         .eq("trade_date", latestDate)
@@ -313,6 +315,7 @@ export const psxController = {
         id: (item.companies as any)?.id,
         symbol: (item.companies as any)?.symbol,
         company_name: (item.companies as any)?.company_name,
+        sector: (item.companies as any)?.sectors?.name,
         volume: item.volume,
         value_traded: item.value_traded,
         close_price: item.close_price,
