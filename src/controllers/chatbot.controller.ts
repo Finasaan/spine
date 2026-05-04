@@ -24,7 +24,6 @@ import {
   extractPageViaVision,
   isVisionTableValid,
   buildExtractedTableRecord,
-  storeExtractedTable,
   storeExtractedTables,
 } from "../services/extraction.service";
 import {
@@ -173,45 +172,42 @@ export async function handleStream(
       modelConfig.id,
     );
 
-    // Sanitize messages: remove any orphaned tool-call parts that don't have
-    // matching tool-result parts. This prevents MissingToolResultsError when
-    // a previous stream errored mid-tool-call and the result was never saved.
+    // Sanitize messages: drop any tool parts from previous assistant turns
+    // that never produced a result. AI SDK v6 represents tool invocations as
+    // `tool-{name}` or `dynamic-tool` parts with a `state` field. If a prior
+    // stream errored mid-tool-call, those parts get persisted in `state:
+    // 'input-streaming'` or `'input-available'` (no output) — feeding them
+    // back into the next request triggers MissingToolResultsError on the
+    // provider side, which is one of the main causes of repeat stream
+    // failures we see on Groq Llama.
     const sanitizedMessages = (
       messages as Array<{
         role: string;
-        parts?: Array<{
-          type: string;
-          toolCallId?: string;
-          [k: string]: unknown;
-        }>;
+        parts?: Array<{ type: string; state?: string; [k: string]: unknown }>;
         [k: string]: unknown;
       }>
-    ).map((msg) => {
-      if (msg.role !== "assistant" || !Array.isArray(msg.parts)) return msg;
+    )
+      .map((msg) => {
+        if (msg.role !== "assistant" || !Array.isArray(msg.parts)) return msg;
 
-      // Collect all tool-result IDs across all messages
-      const resultIds = new Set<string>();
-      for (const m of messages as Array<{
-        parts?: Array<{ type: string; toolCallId?: string }>;
-      }>) {
-        if (!Array.isArray(m.parts)) continue;
-        for (const p of m.parts) {
-          if (p.type === "tool-result" && p.toolCallId) {
-            resultIds.add(p.toolCallId);
-          }
-        }
-      }
+        const filteredParts = msg.parts.filter((p) => {
+          const isToolPart =
+            p.type === "dynamic-tool" || p.type.startsWith("tool-");
+          if (!isToolPart) return true;
+          // Keep only tool parts that reached a terminal state.
+          return p.state === "output-available" || p.state === "output-error";
+        });
 
-      // Filter out tool-call parts without matching results
-      const filteredParts = msg.parts.filter((p) => {
-        if (p.type === "tool-call" && p.toolCallId) {
-          return resultIds.has(p.toolCallId);
-        }
-        return true;
+        return { ...msg, parts: filteredParts };
+      })
+      // Drop assistant turns that became empty after sanitization. An
+      // assistant message with no parts gets converted to an empty content
+      // array, which Groq rejects as a malformed message in the next turn.
+      .filter((msg) => {
+        if (msg.role !== "assistant") return true;
+        if (!Array.isArray(msg.parts)) return true;
+        return msg.parts.length > 0;
       });
-
-      return { ...msg, parts: filteredParts };
-    });
 
     // Convert UI messages → model messages (AI SDK v6 async)
     const modelMessages = await convertToModelMessages(
@@ -238,6 +234,29 @@ export async function handleStream(
       })),
     });
 
+    // Track partial assistant output so we can persist it even if the stream
+    // errors mid-flight (e.g. Groq drops the connection after a tool call).
+    let partialText = "";
+    let persisted = false;
+    const flushPersist = async (
+      text: string,
+      toolsUsed: string[],
+      errorMessage?: string,
+    ) => {
+      if (persisted) return;
+      persisted = true;
+      try {
+        await persistMessages(supabase, session.id, latestText, text, {
+          model: modelConfig.id,
+          toolsUsed,
+          sessionId: session.id,
+          ...(errorMessage ? { error: errorMessage } : {}),
+        });
+      } catch (err) {
+        console.error("[handleStream] Failed to persist messages:", err);
+      }
+    };
+
     // Stream response
     const result = streamText({
       model,
@@ -260,18 +279,18 @@ ${pc.content ? pc.content : "No text visible."}
       tools,
       stopWhen: stepCountIs(12),
       temperature: 0.1,
-      maxTokens: modelConfig.maxOutputTokens,
-      // Repair tool calls where the LLM sends strings instead of numbers/booleans
+      maxOutputTokens: modelConfig.maxOutputTokens,
+      // Repair tool calls where the LLM sends strings instead of numbers/booleans.
+      // AI SDK v6: `toolCall.input` is the stringified JSON arg payload.
       experimental_repairToolCall: async ({ toolCall, error }) => {
         try {
-          const args = JSON.parse(toolCall.args);
-          // Coerce string values that look like numbers or booleans
+          const args = JSON.parse(toolCall.input);
           for (const key of Object.keys(args)) {
             const val = args[key];
             if (typeof val === "string") {
-              if (/^\d+$/.test(val)) {
+              if (/^-?\d+$/.test(val)) {
                 args[key] = parseInt(val, 10);
-              } else if (/^\d+\.\d+$/.test(val)) {
+              } else if (/^-?\d+\.\d+$/.test(val)) {
                 args[key] = parseFloat(val);
               } else if (val === "true" || val === "false") {
                 args[key] = val === "true";
@@ -282,7 +301,7 @@ ${pc.content ? pc.content : "No text visible."}
             `[repairToolCall] Fixed args for ${toolCall.toolName}:`,
             args,
           );
-          return { ...toolCall, args: JSON.stringify(args) };
+          return { ...toolCall, input: JSON.stringify(args) };
         } catch {
           console.error(
             `[repairToolCall] Could not repair ${toolCall.toolName}:`,
@@ -291,25 +310,48 @@ ${pc.content ? pc.content : "No text visible."}
           return null;
         }
       },
-      onFinish: async ({ text, steps }) => {
-        // Persist after stream completes
-        try {
-          const toolsUsed = steps.flatMap((s) =>
-            (s.toolCalls ?? []).map((tc) => tc.toolName),
-          );
-          await persistMessages(supabase, session.id, latestText, text, {
-            model: modelConfig.id,
-            toolsUsed,
-            sessionId: session.id,
-          });
-        } catch (err) {
-          console.error("[onFinish] Failed to persist messages:", err);
+      // Mirror text deltas so we can persist whatever the model managed to
+      // produce even if the stream errors before onFinish fires.
+      onChunk: ({ chunk }) => {
+        if (chunk.type === "text-delta") {
+          partialText += (chunk as { text?: string }).text ?? "";
         }
+      },
+      onError: ({ error }) => {
+        console.error(
+          "[handleStream] streamText error:",
+          error instanceof Error ? error.stack ?? error.message : error,
+        );
+      },
+      onFinish: async ({ text, steps }) => {
+        const toolsUsed = steps.flatMap((s) =>
+          (s.toolCalls ?? []).map((tc) => tc.toolName),
+        );
+        await flushPersist(text || partialText, toolsUsed);
       },
     });
 
     // Return session id in response headers so client can track it
-    const response = result.toUIMessageStreamResponse();
+    const response = result.toUIMessageStreamResponse({
+      // Surface real error messages to the client. Without this, AI SDK's
+      // default emits a generic 'An error occurred.' which makes Groq stream
+      // failures impossible to debug from the UI.
+      onError: (error) => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : "Stream failed. Please try again.";
+        // Persist the user message + whatever partial content we got so the
+        // turn isn't lost (the user sees their question vanish on reload
+        // otherwise).
+        c.executionCtx?.waitUntil?.(
+          flushPersist(partialText, [], message).catch(() => {}),
+        );
+        return message;
+      },
+    });
     const headers = new Headers(response.headers);
     headers.set("X-Session-Id", session.id);
     return new Response(response.body, { status: response.status, headers });
