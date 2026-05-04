@@ -672,78 +672,213 @@ export function createKnowledgeTools(
 
     searchRecentNews: tool({
       description:
-        "Targeted search of recent Pakistan economic/business news by TOPIC, COMPANY, TICKER, SECTOR, or EVENT. Use whenever the user asks about news on something specific — 'news on HBL', 'OGDC announcements', 'banking sector news', 'IMF deal updates'. Internally tries vector similarity search first (default min similarity 0.40), then falls back to recency-ordered articles. Default 30-day window, max 90 days. Returns same enriched fields as getRecentHeadlines (summary, sentiment, affected_sectors, affected_tickers, impact_analysis). For broad 'what's happening' without a target, use getRecentHeadlines.",
+        "Targeted search of recent Pakistan economic/business news by TOPIC, COMPANY, TICKER, SECTOR, or EVENT. Use whenever the user asks about news on something specific — 'news on HBL', 'OGDC announcements', 'banking sector news', 'IMF deal updates', 'how does current news affect cement?'. Runs three searches in parallel and merges them: (1) semantic vector similarity over article embeddings, (2) array-overlap on affected_sectors when a known sector is detected in the query (Banking, Cement, Chemical, Energy, Fertilizer, Food & Beverages, Insurance, Oil & Gas, Pharmaceuticals, Steel, Technology, Telecom, Textile, Real Estate, Automobile — common synonyms like 'bank', 'pharma', 'oil' also detected), (3) array-overlap on affected_tickers when uppercase tickers are present in the query. Results are deduped and ranked by signal strength (ticker hit > sector hit > vector match). Default 30-day window, max 90 days. Returns same enriched fields as getRecentHeadlines (summary, sentiment, affected_sectors, affected_tickers, impact_analysis) plus a `matchedOn` array showing which signals fired for each article. For broad 'what's happening' without a target, use getRecentHeadlines.",
       inputSchema: z.object({
-        query:        z.string().describe("Natural language search query or company/ticker name"),
-        limit:        z.coerce.number().int().min(1).max(8).optional().default(5).describe("Results to return"),
+        query:        z.string().describe("Natural language search query or company/ticker/sector name"),
+        limit:        z.coerce.number().int().min(1).max(20).optional().default(10).describe("Results to return"),
         max_age_days: z.coerce.number().int().min(1).max(90).optional().default(30).describe("Only search articles from last N days"),
       }),
       execute: async ({ query, limit, max_age_days }) => {
-        const effectiveLimit = limit ?? 5;
+        const effectiveLimit = limit ?? 10;
         const effectiveDays  = max_age_days ?? 30;
 
-        // --- Attempt 1: vector similarity search ---
-        try {
-          const embedding = await generateEmbedding(ai, query, env);
-          const { data, error } = await supabase.rpc("search_economic_news", {
-            query_embedding: JSON.stringify(embedding),
-            match_limit:     effectiveLimit,
-            min_similarity:  0.40,
-            max_age_days:    effectiveDays,
-          });
+        const KNOWN_SECTORS = [
+          "Banking", "Cement", "Chemical", "Energy", "Fertilizer",
+          "Food & Beverages", "Insurance", "Oil & Gas", "Pharmaceuticals",
+          "Steel", "Technology", "Telecom", "Textile", "Real Estate", "Automobile",
+        ];
+        const SECTOR_SYNONYMS: Record<string, string> = {
+          "bank": "Banking", "banks": "Banking", "banking": "Banking", "financial": "Banking",
+          "oil": "Oil & Gas", "gas": "Oil & Gas", "petroleum": "Oil & Gas", "e&p": "Oil & Gas",
+          "tech": "Technology", " it ": "Technology", "software": "Technology",
+          "telecoms": "Telecom", "telco": "Telecom", "telecom": "Telecom",
+          "pharma": "Pharmaceuticals", "drug": "Pharmaceuticals", "medicine": "Pharmaceuticals",
+          "fertiliser": "Fertilizer", "fertilizer": "Fertilizer", "urea": "Fertilizer", "dap": "Fertilizer",
+          "food": "Food & Beverages", "beverage": "Food & Beverages", "fmcg": "Food & Beverages",
+          "auto": "Automobile", "automotive": "Automobile", "car": "Automobile", "cars": "Automobile",
+          "real estate": "Real Estate", "property": "Real Estate", "housing": "Real Estate",
+          "cement": "Cement", "chemical": "Chemical", "steel": "Steel",
+          "insurance": "Insurance", "energy": "Energy", "power": "Energy", "electricity": "Energy",
+          "textile": "Textile", "garment": "Textile", "apparel": "Textile",
+        };
 
-          if (!error && (data ?? []).length > 0) {
-            const results = data as Array<{
-              id: string; title: string; url: string; source: string;
-              published_at: string; ai_summary: string; sentiment: string;
-              affected_sectors: string[]; affected_tickers: string[];
-              impact_analysis: string; similarity: number;
-            }>;
+        const lowerQuery = ` ${query.toLowerCase()} `;
+        const detectedSectors = new Set<string>();
+        for (const s of KNOWN_SECTORS) {
+          if (lowerQuery.includes(s.toLowerCase())) detectedSectors.add(s);
+        }
+        for (const [key, val] of Object.entries(SECTOR_SYNONYMS)) {
+          if (lowerQuery.includes(key)) detectedSectors.add(val);
+        }
+        const sectorList = Array.from(detectedSectors);
+
+        // Tickers: uppercase 2-6 char tokens preserved verbatim from the query.
+        const tickerList = Array.from(new Set(query.match(/\b[A-Z]{2,6}\b/g) ?? []));
+
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - effectiveDays);
+        const cutoffISO = cutoff.toISOString();
+
+        const SELECT_FIELDS =
+          "id, title, url, source, published_at, ai_summary, sentiment, " +
+          "affected_sectors, affected_tickers, impact_analysis";
+
+        type Article = {
+          id: string; title: string; url: string; source: string;
+          published_at: string; ai_summary: string; sentiment: string;
+          affected_sectors: string[]; affected_tickers: string[];
+          impact_analysis: string;
+        };
+        type Scored = Article & { score: number; similarity?: number; matchedOn: string[] };
+
+        const merged = new Map<string, Scored>();
+        const addOrBoost = (
+          a: Article,
+          scoreAdd: number,
+          tag: string,
+          similarity?: number,
+        ) => {
+          const prev = merged.get(a.id);
+          if (prev) {
+            prev.score += scoreAdd;
+            if (!prev.matchedOn.includes(tag)) prev.matchedOn.push(tag);
+            if (similarity !== undefined && (prev.similarity ?? 0) < similarity) {
+              prev.similarity = similarity;
+            }
+          } else {
+            merged.set(a.id, { ...a, score: scoreAdd, similarity, matchedOn: [tag] });
+          }
+        };
+
+        // Pull a wider candidate pool than the user asked for, so re-ranking has
+        // material to work with.
+        const broadLimit = Math.min(40, effectiveLimit * 4);
+
+        const tasks: Promise<unknown>[] = [];
+
+        // (1) Vector similarity — lower threshold than before so more borderline
+        //     hits survive; we'll re-rank.
+        tasks.push((async () => {
+          try {
+            const embedding = await generateEmbedding(ai, query, env);
+            const { data, error } = await supabase.rpc("search_economic_news", {
+              query_embedding: JSON.stringify(embedding),
+              match_limit:     broadLimit,
+              min_similarity:  0.30,
+              max_age_days:    effectiveDays,
+            });
+            if (error) return;
+            for (const r of (data ?? []) as Array<Article & { similarity: number }>) {
+              addOrBoost(r, 1 + r.similarity, "vector", r.similarity);
+            }
+          } catch {
+            // non-fatal
+          }
+        })());
+
+        // (2) Sector overlap
+        if (sectorList.length > 0) {
+          tasks.push((async () => {
+            try {
+              const { data } = await supabase
+                .from("economic_news")
+                .select(SELECT_FIELDS)
+                .overlaps("affected_sectors", sectorList)
+                .gte("published_at", cutoffISO)
+                .order("published_at", { ascending: false })
+                .limit(broadLimit);
+              for (const r of (data ?? []) as Article[]) {
+                addOrBoost(r, 1.5, `sector:${sectorList.join("|")}`);
+              }
+            } catch {
+              // non-fatal
+            }
+          })());
+        }
+
+        // (3) Ticker overlap
+        if (tickerList.length > 0) {
+          tasks.push((async () => {
+            try {
+              const { data } = await supabase
+                .from("economic_news")
+                .select(SELECT_FIELDS)
+                .overlaps("affected_tickers", tickerList)
+                .gte("published_at", cutoffISO)
+                .order("published_at", { ascending: false })
+                .limit(broadLimit);
+              for (const r of (data ?? []) as Article[]) {
+                addOrBoost(r, 2.0, `ticker:${tickerList.join("|")}`);
+              }
+            } catch {
+              // non-fatal
+            }
+          })());
+        }
+
+        await Promise.all(tasks);
+
+        const all = Array.from(merged.values());
+
+        // Recency fallback when no signal fired
+        if (all.length === 0) {
+          try {
+            const { data, error } = await supabase
+              .from("economic_news")
+              .select(SELECT_FIELDS)
+              .gte("published_at", cutoffISO)
+              .order("published_at", { ascending: false })
+              .limit(effectiveLimit);
+            if (error) throw new Error(error.message);
             return {
               query,
-              articles: results.map((r) => ({ ...r, similarity: Math.round(r.similarity * 1000) / 1000 })),
-              total:    results.length,
+              detectedSectors: sectorList.length ? sectorList : undefined,
+              detectedTickers: tickerList.length ? tickerList : undefined,
+              articles: (data ?? []) as Article[],
+              total: (data ?? []).length,
+              note: "No targeted matches found — returning the most-recent articles in the window.",
+            };
+          } catch (err) {
+            return {
+              query,
+              articles: [],
+              total: 0,
+              error: err instanceof Error ? err.message : "News search failed",
             };
           }
-        } catch {
-          // fall through to text search
         }
 
-        // --- Attempt 2: return all recent articles, let the model filter ---
-        try {
-          const cutoff = new Date();
-          cutoff.setDate(cutoff.getDate() - effectiveDays);
+        // Rank: higher score first, then more recent
+        all.sort((a, b) => {
+          if (b.score !== a.score) return b.score - a.score;
+          return new Date(b.published_at).getTime() - new Date(a.published_at).getTime();
+        });
 
-          const { data, error } = await supabase
-            .from("economic_news")
-            .select(
-              "id, title, url, source, published_at, ai_summary, sentiment, " +
-              "affected_sectors, affected_tickers, impact_analysis"
-            )
-            .gte("published_at", cutoff.toISOString())
-            .order("published_at", { ascending: false })
-            .limit(effectiveLimit);
+        const articles = all.slice(0, effectiveLimit).map((s) => ({
+          id: s.id,
+          title: s.title,
+          url: s.url,
+          source: s.source,
+          published_at: s.published_at,
+          ai_summary: s.ai_summary,
+          sentiment: s.sentiment,
+          affected_sectors: s.affected_sectors,
+          affected_tickers: s.affected_tickers,
+          impact_analysis: s.impact_analysis,
+          matchedOn: s.matchedOn,
+          ...(s.similarity !== undefined
+            ? { similarity: Math.round(s.similarity * 1000) / 1000 }
+            : {}),
+        }));
 
-          if (error) throw new Error(error.message);
-
-          return {
-            query,
-            articles: (data ?? []) as Array<{
-              id: string; title: string; url: string; source: string;
-              published_at: string; ai_summary: string; sentiment: string;
-              affected_sectors: string[]; affected_tickers: string[];
-              impact_analysis: string;
-            }>,
-            total: (data ?? []).length,
-          };
-        } catch (err) {
-          return {
-            query,
-            articles: [],
-            total:    0,
-            error:    err instanceof Error ? err.message : "News search failed",
-          };
-        }
+        return {
+          query,
+          detectedSectors: sectorList.length ? sectorList : undefined,
+          detectedTickers: tickerList.length ? tickerList : undefined,
+          articles,
+          total: articles.length,
+          totalCandidates: all.length,
+        };
       },
     }),
 
