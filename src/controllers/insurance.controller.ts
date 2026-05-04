@@ -84,7 +84,7 @@ export async function handleInsuranceIngest(
 
     for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
       const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
-      const embeddings = await generateEmbeddings(ai, batch);
+      const embeddings = await generateEmbeddings(ai, batch, c.env);
       allEmbeddings.push(...embeddings);
     }
 

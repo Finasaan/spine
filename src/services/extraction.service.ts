@@ -1,16 +1,39 @@
 /**
  * Extraction Service
- * LLM-powered table structuring and vision-based page extraction.
+ * LLM-powered table structuring for the document ingestion pipeline.
  *
- * Two extraction paths:
- * 1. Text-based: raw table text → Llama 3.3 70B → structured JSON
- *    (used by marrow insurance pipeline via /api/extract/structure-table)
- * 2. Vision-based: page image → Llama 3.2 11B Vision → structured tables + prose
- *    (used by spine's handleUploadPDF for table-heavy and scanned pages)
+ * Two extraction entry points, both text-only on Cloudflare Workers
+ * (PDF page rendering via pdf.js is not Workers-compatible):
+ * 1. Single raw table → Llama 3.3 70B → structured JSON
+ *    (insurance pipeline via /api/extract/structure-table)
+ * 2. Whole page text → Llama 3.3 70B → tables[] + prose
+ *    (spine's handleUploadPDF for table-heavy and scanned pages)
  */
 
 import { SupabaseClient } from "@supabase/supabase-js";
 import { AI_GATEWAY_CONFIG } from "../types/chatbot.types";
+
+// Strip characters that PostgreSQL rejects when payloads arrive as JSON via
+// PostgREST: null bytes and lone UTF-16 surrogates. PDF-derived text can
+// leak these and trigger "unsupported Unicode escape sequence" on insert.
+const NUL_RE = new RegExp(String.fromCharCode(0), "g");
+const LONE_SURROGATE_RE = /[\uD800-\uDFFF]/g;
+function pgSanitize<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(NUL_RE, "").replace(LONE_SURROGATE_RE, "") as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => pgSanitize(v)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = pgSanitize(v);
+    }
+    return out as T;
+  }
+  return value;
+}
 
 // ============================================================================
 // Types — Text-Based Extraction (existing)
@@ -38,17 +61,17 @@ export interface StructuredTable {
 }
 
 // ============================================================================
-// Types — Vision-Based Extraction (new)
+// Types — Per-Page Extraction
 // ============================================================================
 
-/** Result from a single page processed by the vision model */
-export interface VisionPageResult {
+/** Result from a single page processed by the page-extraction model */
+export interface PageExtractionResult {
   prose: string;
-  tables: VisionStructuredTable[];
+  tables: PageStructuredTable[];
 }
 
-/** A single table extracted by the vision model */
-export interface VisionStructuredTable {
+/** A single table extracted from a page */
+export interface PageStructuredTable {
   table_name: string;
   table_type: string;
   fiscal_period: string | null;
@@ -88,7 +111,7 @@ export interface ExtractedTableRecord {
 // ============================================================================
 
 const EXTRACTION_MODEL = "llama-3.3-70b-versatile";
-const VISION_MODEL = "llama-3.2-11b-vision-preview";
+const PAGE_EXTRACTION_MODEL = "llama-3.3-70b-versatile";
 
 /**
  * System prompt for text-based table structuring (insurance pipeline).
@@ -128,12 +151,14 @@ Rules:
 10. If the table has merged cells or spanning headers, flatten them into the most logical column structure`;
 
 /**
- * System prompt for vision-based page extraction (financial document pipeline).
+ * System prompt for whole-page extraction (financial document pipeline).
+ * Input is the raw text of one PDF page (as extracted by unpdf), which may
+ * contain collapsed columns, whitespace-aligned tables, or messy artifacts.
  */
-const VISION_SYSTEM_PROMPT = `You are a financial document data extraction assistant. You will be given an image of a single page from a Pakistani company's financial document. This may be a rendered selectable-text PDF page or a fully scanned document.
+const PAGE_EXTRACTION_PROMPT = `You are a financial document data extraction assistant. You will be given the raw text of a single page from a Pakistani company's financial document, extracted from a PDF. The text may have inconsistent formatting: column-aligned tables collapsed into whitespace, pipe-separated artifacts, broken row order, or near-empty content from a scanned page.
 
 Your task:
-1. Extract and normalize ALL tables on this page into structured JSON.
+1. Recover and normalize ALL tables on this page into structured JSON.
 2. Extract all non-table prose text (paragraphs, headings, footnotes, notes) as plain text.
 
 CRITICAL RULES:
@@ -262,56 +287,38 @@ export async function structureTable(
 }
 
 // ============================================================================
-// Vision-Based Page Extraction (new — used by financial document pipeline)
+// Per-Page Extraction (used by financial document pipeline)
 // ============================================================================
 
 /**
- * Extract tables and prose from a single PDF page via the vision model.
- *
- * @param aiGatewayToken - AI Gateway auth token
- * @param base64PNG - Base64-encoded PNG of the page, or null for text-only fallback
- * @param context - Page metadata for the user message
- * @param fallbackText - Raw text of the page (used when base64PNG is null)
- * @returns Parsed vision result with prose and tables
+ * Extract tables and prose from a single PDF page's raw text.
+ * Uses Llama 3.3 70B in JSON mode — no images, since PDF rendering doesn't
+ * work in Cloudflare Workers. Whatever unpdf could pull off the page is what
+ * the model sees; for fully scanned pages this will often be near-empty and
+ * the LLM will return empty tables and minimal prose, which is fine.
  */
-export async function extractPageViaVision(
+export async function extractPageTablesAndProse(
   aiGatewayToken: string,
-  base64PNG: string | null,
+  pageText: string,
   context: {
     company_name: string;
     doc_type?: string;
     pageNumber: number;
     totalPages: number;
-  },
-  fallbackText?: string
-): Promise<VisionPageResult> {
-  const userText = [
+  }
+): Promise<PageExtractionResult> {
+  const userMessage = [
     `Company: ${context.company_name}`,
     context.doc_type ? `Document type: ${context.doc_type}` : null,
     `Page: ${context.pageNumber} of ${context.totalPages}`,
     "",
-    "Extract all tables and prose from this page.",
+    "Page text:",
+    "```",
+    pageText,
+    "```",
   ]
     .filter(Boolean)
     .join("\n");
-
-  // Build user message content — image + text, or text-only fallback
-  let userContent: unknown;
-  if (base64PNG) {
-    userContent = [
-      {
-        type: "image_url",
-        image_url: { url: `data:image/png;base64,${base64PNG}` },
-      },
-      { type: "text", text: userText },
-    ];
-  } else {
-    // Text-only fallback: include the raw page text inline
-    const textFallback = fallbackText
-      ? `\n\nPage text (extracted, no image available):\n${fallbackText}`
-      : "";
-    userContent = userText + textFallback;
-  }
 
   const response = await fetch(
     `${AI_GATEWAY_CONFIG.baseUrl}/chat/completions`,
@@ -322,13 +329,14 @@ export async function extractPageViaVision(
         "cf-aig-authorization": `Bearer ${aiGatewayToken}`,
       },
       body: JSON.stringify({
-        model: `groq/${VISION_MODEL}`,
+        model: `groq/${PAGE_EXTRACTION_MODEL}`,
         messages: [
-          { role: "system", content: VISION_SYSTEM_PROMPT },
-          { role: "user", content: userContent },
+          { role: "system", content: PAGE_EXTRACTION_PROMPT },
+          { role: "user", content: userMessage },
         ],
         temperature: 0.1,
-        max_tokens: 3500,
+        max_tokens: 4096,
+        response_format: { type: "json_object" },
       }),
     }
   );
@@ -336,7 +344,7 @@ export async function extractPageViaVision(
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(
-      `AI Gateway error during vision extraction: ${response.status} - ${errorText}`
+      `AI Gateway error during page extraction: ${response.status} - ${errorText}`
     );
   }
 
@@ -346,20 +354,16 @@ export async function extractPageViaVision(
   };
 
   if (result.error) {
-    throw new Error(`Groq error during vision extraction: ${result.error.message}`);
+    throw new Error(`Groq error during page extraction: ${result.error.message}`);
   }
 
   const raw = result.choices?.[0]?.message?.content?.trim();
   if (!raw) {
-    throw new Error("No response from vision model");
+    throw new Error("No response from page extraction model");
   }
 
-  // Strip markdown fences (vision models often wrap JSON in ```json ... ```)
-  const content = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
+  const parsed = JSON.parse(raw) as PageExtractionResult;
 
-  const parsed = JSON.parse(content) as VisionPageResult;
-
-  // Normalize: ensure prose is a string and tables is an array
   return {
     prose: typeof parsed.prose === "string" ? parsed.prose : "",
     tables: Array.isArray(parsed.tables) ? parsed.tables : [],
@@ -367,14 +371,14 @@ export async function extractPageViaVision(
 }
 
 // ============================================================================
-// Vision Table Validation
+// Page Table Validation
 // ============================================================================
 
 /**
- * Validate a vision-extracted table before storage.
+ * Validate a page-extracted table before storage.
  * Must have name, type, headers, at least one row with a non-null numeric value.
  */
-export function isVisionTableValid(table: VisionStructuredTable): boolean {
+export function isPageTableValid(table: PageStructuredTable): boolean {
   if (!table.table_name || !table.table_type) return false;
   if (!Array.isArray(table.headers) || table.headers.length === 0) return false;
   if (!Array.isArray(table.rows) || table.rows.length === 0) return false;
@@ -387,13 +391,13 @@ export function isVisionTableValid(table: VisionStructuredTable): boolean {
 }
 
 /**
- * Build an ExtractedTableRecord from a vision-extracted table.
+ * Build an ExtractedTableRecord from a page-extracted table.
  */
 export function buildExtractedTableRecord(
-  table: VisionStructuredTable,
+  table: PageStructuredTable,
   documentHash: string,
   company: string | null,
-  docType: string | null
+  _docType: string | null
 ): ExtractedTableRecord {
   return {
     source_document_id: documentHash,
@@ -410,7 +414,7 @@ export function buildExtractedTableRecord(
     headers: table.headers,
     rows: table.rows,
     raw_table_text: JSON.stringify(table.rows),
-    extraction_model: VISION_MODEL,
+    extraction_model: PAGE_EXTRACTION_MODEL,
   };
 }
 
@@ -432,17 +436,17 @@ export async function storeExtractedTable(
       source_document_id: record.source_document_id,
       source_type: record.source_type,
       company_id: record.company_id,
-      company_name: record.company_name,
-      table_name: record.table_name,
+      company_name: pgSanitize(record.company_name),
+      table_name: pgSanitize(record.table_name),
       table_type: record.table_type,
-      fiscal_period: record.fiscal_period,
+      fiscal_period: pgSanitize(record.fiscal_period),
       fiscal_period_end: record.fiscal_period_end,
-      currency: record.currency,
-      table_unit: record.table_unit,
+      currency: pgSanitize(record.currency),
+      table_unit: pgSanitize(record.table_unit),
       comparative: record.comparative,
-      headers: record.headers,
-      rows: record.rows,
-      raw_table_text: record.raw_table_text,
+      headers: pgSanitize(record.headers),
+      rows: pgSanitize(record.rows),
+      raw_table_text: pgSanitize(record.raw_table_text),
       extraction_model: record.extraction_model,
     })
     .select("id")
@@ -472,17 +476,17 @@ export async function storeExtractedTables(
         source_document_id: record.source_document_id,
         source_type: record.source_type,
         company_id: record.company_id,
-        company_name: record.company_name,
-        table_name: record.table_name,
+        company_name: pgSanitize(record.company_name),
+        table_name: pgSanitize(record.table_name),
         table_type: record.table_type,
-        fiscal_period: record.fiscal_period,
+        fiscal_period: pgSanitize(record.fiscal_period),
         fiscal_period_end: record.fiscal_period_end,
-        currency: record.currency,
-        table_unit: record.table_unit,
+        currency: pgSanitize(record.currency),
+        table_unit: pgSanitize(record.table_unit),
         comparative: record.comparative,
-        headers: record.headers,
-        rows: record.rows,
-        raw_table_text: record.raw_table_text,
+        headers: pgSanitize(record.headers),
+        rows: pgSanitize(record.rows),
+        raw_table_text: pgSanitize(record.raw_table_text),
         extraction_model: record.extraction_model,
       }))
     )

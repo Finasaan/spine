@@ -49,20 +49,53 @@ export async function generateEmbedding(
   return data[0];
 }
 
+// bge-large-en-v1.5 has a 512-token input cap. ~2000 chars is a safe bound
+// that holds for table/numeric content where token density is high.
+const EMBED_INPUT_MAX_CHARS = 2000;
+
+function clipEmbeddingInputs(texts: string[]): string[] {
+  return texts.map((t) =>
+    t.length > EMBED_INPUT_MAX_CHARS ? t.slice(0, EMBED_INPUT_MAX_CHARS) : t
+  );
+}
+
+async function runBindingWithRetry(
+  ai: Ai,
+  texts: string[]
+): Promise<number[][]> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
+        text: texts,
+      })) as { data?: number[][] };
+      if (response.data) return response.data;
+      throw new Error("Failed to generate embeddings: no data returned");
+    } catch (err) {
+      lastErr = err;
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export async function generateEmbeddings(
   ai: Ai,
   texts: string[],
   env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string }
 ): Promise<number[][]> {
-  try {
-    const response = (await ai.run("@cf/baai/bge-large-en-v1.5", {
-      text: texts,
-    })) as { data?: number[][] };
+  const safeTexts = clipEmbeddingInputs(texts);
 
-    if (response.data) return response.data;
-    throw new Error("Failed to generate embeddings: no data returned");
+  try {
+    return await runBindingWithRetry(ai, safeTexts);
   } catch (error: any) {
     if (env?.CLOUDFLARE_API_TOKEN && env?.CLOUDFLARE_ACCOUNT_ID) {
+      console.warn(
+        "[generateEmbeddings] AI binding failed after retries, falling back to direct HTTP:",
+        error instanceof Error ? error.message : error
+      );
       const resp = await fetch(
         `https://api.cloudflare.com/client/v4/accounts/${env.CLOUDFLARE_ACCOUNT_ID}/ai/run/@cf/baai/bge-large-en-v1.5`,
         {
@@ -71,7 +104,7 @@ export async function generateEmbeddings(
             Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ text: texts }),
+          body: JSON.stringify({ text: safeTexts }),
         }
       );
 
@@ -82,6 +115,7 @@ export async function generateEmbeddings(
 
       const result = await resp.json() as { result?: { data: number[][] } };
       if (result.result?.data) return result.result.data;
+      throw new Error("Workers AI direct embedding returned no data");
     }
     throw error;
   }

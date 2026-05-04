@@ -17,7 +17,7 @@ export function createUserTools(
   return {
     getUserPortfolio: tool({
       description:
-        "Get the user's investment portfolios and holdings. Use when the user asks about their portfolio or investments.",
+        "The AUTHENTICATED user's own investment portfolios and holdings (scoped to their userId — never returns anyone else's data). Two modes: omit portfolioId to list all of their portfolios (id, name, description, createdAt); pass a specific portfolioId to drill into ONE portfolio's holdings — each holding shows assetType ('stock' | 'fund'), symbol, name, quantity, purchase price/date, notes. Use for 'my portfolio', 'my holdings', 'what stocks/funds do I own', 'show my investments'. For an analytical health summary (P/L, news impact) use getPortfolioInsight; for tracked-but-not-owned items use getUserWatchlist.",
       inputSchema: z.object({
         portfolioId: z
           .string()
@@ -114,7 +114,7 @@ export function createUserTools(
 
     getUserWatchlist: tool({
       description:
-        "Get the user's stock and fund watchlist. Use when asked about watchlist or saved stocks.",
+        "The AUTHENTICATED user's watchlist — stocks and mutual funds they're TRACKING but do not necessarily own (no quantities or purchase data). Returns assetType, symbol, name for each entry. Use for 'my watchlist', 'saved stocks', 'what am I tracking', 'stocks I'm following'. For owned holdings use getUserPortfolio.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -159,7 +159,7 @@ export function createUserTools(
 
     getPortfolioInsight: tool({
       description:
-        "Generate an AI-powered portfolio health summary for the authenticated user. Analyzes current holdings, P/L, and recent news affecting held stocks.",
+        "AI-generated health analysis of the AUTHENTICATED user's portfolio — combines current holdings, profit/loss against purchase prices, and recent news affecting held tickers into a single narrative summary. Use for 'analyze my portfolio', 'how am I doing', 'portfolio health', 'should I rebalance'. EXPENSIVE call (runs an internal LLM pass) — do NOT call this for simple 'what do I own' queries; use getUserPortfolio for that.",
       inputSchema: z.object({}),
       execute: async () => {
         try {

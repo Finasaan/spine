@@ -9,6 +9,40 @@ import { generateEmbedding, generateEmbeddings } from "./ai.service";
 import type { ChatSession, ChatMessageRecord } from "../types/chatbot.types";
 
 // ============================================
+// Sanitization
+// ============================================
+
+/**
+ * Strip characters that PostgreSQL rejects when payloads arrive as JSON
+ * via PostgREST: null bytes (U+0000) and lone UTF-16 surrogates. PDF text
+ * extraction commonly leaks these from binary streams, producing the error
+ * "unsupported Unicode escape sequence" on insert.
+ */
+function sanitizeForPostgres(value: string): string {
+  return value
+    .replace(new RegExp(String.fromCharCode(0), "g"), "")
+    .replace(/[\uD800-\uDFFF]/g, "");
+}
+
+function sanitizeMetadata(meta: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (typeof v === "string") {
+      out[k] = sanitizeForPostgres(v);
+    } else if (v && typeof v === "object" && !Array.isArray(v)) {
+      out[k] = sanitizeMetadata(v as Record<string, unknown>);
+    } else if (Array.isArray(v)) {
+      out[k] = v.map((item) =>
+        typeof item === "string" ? sanitizeForPostgres(item) : item
+      );
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+// ============================================
 // Hash Utility
 // ============================================
 
@@ -78,9 +112,9 @@ export async function storeFinasaanDocuments(
     .insert(
       documents.map((doc) => ({
         domain,
-        content: doc.content,
+        content: sanitizeForPostgres(doc.content),
         embedding: JSON.stringify(doc.embedding),
-        metadata: doc.metadata || {},
+        metadata: sanitizeMetadata(doc.metadata || {}),
         document_hash: documentHash,
       }))
     )
@@ -283,7 +317,8 @@ export async function uploadConversationDocument(
   ai: Ai,
   sessionId: string,
   userId: string,
-  file: File
+  file: File,
+  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string }
 ): Promise<{ filename: string; chunksCreated: number }> {
   // Validate file
   if (!file.name.toLowerCase().endsWith(".pdf")) {
@@ -304,15 +339,15 @@ export async function uploadConversationDocument(
 
   // Generate embeddings in batch
   const texts = chunks.map((c) => c.text);
-  const embeddings = await generateEmbeddings(ai, texts);
+  const embeddings = await generateEmbeddings(ai, texts, env);
 
   // Store chunks
   const records = chunks.map((chunk, i) => ({
     session_id: sessionId,
     user_id: userId,
-    filename: file.name,
+    filename: sanitizeForPostgres(file.name),
     chunk_index: chunk.metadata.chunk_index,
-    content: chunk.text,
+    content: sanitizeForPostgres(chunk.text),
     embedding: JSON.stringify(embeddings[i]),
   }));
 
@@ -366,9 +401,9 @@ export async function storeKnowledgeDocuments(
     .insert(
       documents.map((doc) => ({
         domain: doc.domain,
-        content: doc.content,
+        content: sanitizeForPostgres(doc.content),
         embedding: JSON.stringify(doc.embedding),
-        metadata: doc.metadata || {},
+        metadata: sanitizeMetadata(doc.metadata || {}),
         document_hash: doc.documentHash || null,
       }))
     )

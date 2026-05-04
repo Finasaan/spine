@@ -4,3 +4,6 @@ export { logout } from "./logout.controller";
 export { me } from "./me.controller";
 export { refresh } from "./refresh.controller";
 export { oauthGoogleRedirect, oauthCallback } from "./oauth.controller";
+export { changePassword } from "./change-password.controller";
+export { forgotPassword } from "./forgot-password.controller";
+export { resetPassword } from "./reset-password.controller";

@@ -253,14 +253,13 @@ export const psxController = {
   },
 
   /**
-   * Get top 10 stocks by value traded from the latest trade date
-   * Used for dashboard display
+   * Get top 10 gainers (by intraday % change) from the latest trade date.
+   * Restricts to actively traded stocks so illiquid micro-caps don't dominate.
    */
   getTopStocks: async (c: AppContext) => {
     try {
       const supabase = await getSupabaseClient(c.env);
 
-      // First, get the latest trade date
       const { data: latestData, error: latestError } = await supabase
         .from("daily_stock_data")
         .select("trade_date")
@@ -277,11 +276,9 @@ export const psxController = {
       }
 
       const latestDate = latestData.trade_date;
-
-      // Get top 10 stocks by value_traded on the latest date
-      // Exclude bills & bonds sector
       const BILLS_BONDS_SECTOR_ID = "978757d6-3c54-4704-bf4b-5f0e489ab668";
 
+      // Pull the most-traded stocks first (liquidity floor), then re-rank by gain.
       const { data, error } = await supabase
         .from("daily_stock_data")
         .select(`
@@ -303,29 +300,76 @@ export const psxController = {
         `)
         .eq("trade_date", latestDate)
         .neq("companies.sector_id", BILLS_BONDS_SECTOR_ID)
+        .gt("open_price", 0)
         .order("value_traded", { ascending: false })
-        .limit(10);
+        .limit(50);
 
       if (error) {
         return c.json({ success: false, error: error.message }, 500);
       }
 
-      // Flatten the response
-      const flatData = data?.map((item) => ({
-        id: (item.companies as any)?.id,
-        symbol: (item.companies as any)?.symbol,
-        company_name: (item.companies as any)?.company_name,
-        sector: (item.companies as any)?.sectors?.name,
-        volume: item.volume,
-        value_traded: item.value_traded,
-        close_price: item.close_price,
-        open_price: item.open_price,
-        trade_date: item.trade_date,
-      })) || [];
+      const ranked = (data || [])
+        .map((item) => {
+          const open = item.open_price ?? 0;
+          const close = item.close_price ?? 0;
+          const change_pct = open > 0 ? ((close - open) / open) * 100 : 0;
+          return {
+            id: (item.companies as any)?.id,
+            symbol: (item.companies as any)?.symbol,
+            company_name: (item.companies as any)?.company_name,
+            sector: (item.companies as any)?.sectors?.name,
+            volume: item.volume,
+            value_traded: item.value_traded,
+            close_price: item.close_price,
+            open_price: item.open_price,
+            trade_date: item.trade_date,
+            change_pct,
+          };
+        })
+        .sort((a, b) => b.change_pct - a.change_pct)
+        .slice(0, 10);
 
       return c.json({
         success: true,
-        data: flatData,
+        data: ranked,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err) {
+      return c.json(errorResponse(err), 500);
+    }
+  },
+
+  /**
+   * Pull insights + key figures from ingested company reports.
+   * Returns `data: null` (success: true) when no documents exist for the company —
+   * the client renders nothing in that case.
+   */
+  getDocumentInsights: async (c: AppContext) => {
+    try {
+      const supabase = await getSupabaseClient(c.env);
+      const symbol = c.req.param("symbol");
+      const { psxService } = await import("../services/psx.service");
+
+      const { data: company, error: cErr } = await supabase
+        .from("companies")
+        .select("id, symbol, company_name")
+        .eq("symbol", symbol.toUpperCase())
+        .single();
+
+      if (cErr || !company) {
+        return c.json({ success: false, error: "Company not found" }, 404);
+      }
+
+      const result = await psxService.getDocumentInsights(
+        supabase,
+        c.env,
+        company.company_name || symbol,
+        symbol,
+      );
+
+      return c.json({
+        success: true,
+        data: result,
         timestamp: new Date().toISOString(),
       });
     } catch (err) {

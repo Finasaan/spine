@@ -12,7 +12,7 @@ export function createFundsTools(supabase: SupabaseClient) {
   return {
     queryMutualFunds: tool({
       description:
-        "Query Pakistani mutual funds with flexible filters. Use this for any fund-related question: searching, filtering by category/risk, ranking by performance or size, calculating returns over any period (1 month to 5 years), or listing funds. Supports combining multiple filters.",
+        "Query / rank Pakistani mutual funds with flexible filters. Use for ALL fund discovery and ranking questions: 'best equity fund over 3 years', 'largest Islamic income funds', 'low-risk money market funds', 'top YTD performers', or just listing funds by AMC. Combinable filters: search (text on name/symbol), category (equity | money_market | income | asset_allocation | fund_of_funds | islamic_equity | islamic_income | islamic_money_market), riskProfile (low | medium | high), providerId (AMC UUID — get via getFundProviders). sortBy: 'ytd' (year-to-date %), 'aum' (size), 'name', or 'return' (computed over returnPeriodMonths — 12=1yr, 36=3yr, 60=5yr — uses NAV history math). Returns symbol, name, AUM, YTD, risk profile, inception date, and (when sortBy='return') computed returnPct. For one named fund's full details use getFundDetail; for NAV charts use getFundNavHistory.",
       inputSchema: z.object({
         search: z
           .string()
@@ -333,7 +333,7 @@ export function createFundsTools(supabase: SupabaseClient) {
 
     getFundDetail: tool({
       description:
-        "Get full details about a specific mutual fund by ID or name. Use after queryMutualFunds to get complete info on a fund.",
+        "Full record for ONE mutual fund — every column from mutual_funds (symbol, name, provider, sector, AUM, YTD, risk, description, inception). Pass fundId (UUID, preferred — usually obtained from queryMutualFunds) OR fundName (text — does an ilike fuzzy match, returns first hit). Use when the user names a specific fund or after queryMutualFunds when you need fields beyond the search projection. For NAV history / performance charts use getFundNavHistory.",
       inputSchema: z.object({
         fundId: z
           .string()
@@ -393,7 +393,7 @@ export function createFundsTools(supabase: SupabaseClient) {
 
     getFundNavHistory: tool({
       description:
-        "Get NAV (Net Asset Value) price history for a mutual fund. Use this to analyze fund performance trends, show price charts, or calculate returns over a period. Supports up to 5 years of history.",
+        "Daily NAV (Net Asset Value) price history for ONE mutual fund — used for performance trends, charts, and computing returns over a custom window. Requires fundId (UUID — get via queryMutualFunds or getFundDetail). 'days' sets the lookback (default 30, max 1825 = ~5 years). For ranked 'best fund over X years' use queryMutualFunds with sortBy='return' and returnPeriodMonths instead — it does the math across many funds in one call.",
       inputSchema: z.object({
         fundId: z
           .string()
@@ -447,7 +447,7 @@ export function createFundsTools(supabase: SupabaseClient) {
 
     getFundProviders: tool({
       description:
-        "Get list of all mutual fund management companies / providers (AMCs). Use when user asks about fund houses, AMCs, or management companies.",
+        "List every Pakistani mutual fund management company (AMC) / fund provider with its UUID. Call this BEFORE queryMutualFunds whenever the user asks for funds from a specific house — e.g. 'HBL funds', 'Meezan AMC', 'UBL Fund Managers' → getFundProviders → pick the matching id → queryMutualFunds({providerId}).",
       inputSchema: z.object({}),
       execute: async () => {
         try {

@@ -21,16 +21,14 @@ import {
 } from "../services/chatbot.service";
 import { generateEmbeddings } from "../services/ai.service";
 import {
-  extractPageViaVision,
-  isVisionTableValid,
+  extractPageTablesAndProse,
+  isPageTableValid,
   buildExtractedTableRecord,
-  storeExtractedTable,
   storeExtractedTables,
 } from "../services/extraction.service";
 import {
   extractPerPageTexts,
   isTableHeavyPage,
-  renderPageToBase64PNG,
   countNonWhitespace,
   chunkText,
 } from "../services/pdf.service";
@@ -48,10 +46,17 @@ const SYSTEM_PROMPT = `You are FinasaanGPT, an AI financial intelligence assista
 Persona: Direct, precise, data-driven. You speak like a Bloomberg terminal with manners.
 Language: Mirror the user's language — if they write in Urdu or Roman Urdu, respond in kind.
 
+DOMAIN GUARDRAILS:
+- You are strictly assigned to the domain of Pakistan stocks, mutual funds, insurance, taxation, and the user's portfolio.
+- NEVER do anything outside of your assigned domain. If a user asks something outside this domain, explicitly drop a simple rejection message (e.g., "I can only assist with finance, investments, taxation, and portfolio matters.").
+- Your first resort should ALWAYS be your tool calls for data. Only add onto that with your own base knowledge after retrieving and analyzing the data.
+- DO NOT make up data or hallucinate prices/statistics. If you don't know something or cannot find it via tools, say so explicitly.
+- You ARE allowed to provide financial advice, valuations, and stock picks based on your analysis. However, whenever you do, you must always drop a disclaimer at the end: "⚠️ Not investment advice. Always do your own research before acting."
+
 Rules:
-- Always use tools before answering data questions. Never hallucinate prices or statistics.
 - Keep responses dense and structured. Use markdown tables for comparisons.
-- Do not provide specific buy/sell recommendations — present data and let users decide.
+- Answer investment-related questions thoroughly using all available data and tools.
+- For valuation and analysis questions: NEVER refuse because a pre-calculated metric (P/E, EPS, P/B, dividend yield, etc.) isn't directly in the database. Instead, retrieve the raw components using your tools and CALCULATE these metrics yourself. For example: P/E = current stock price ÷ earnings per share; EPS = net profit ÷ shares outstanding; P/B = market cap ÷ book value. If data is partial, work with what you have, state your assumptions clearly, and present your best-effort analysis rather than giving up. An approximate answer with caveats is always better than no answer.
 - For PSX stocks: always include ticker symbol, price, and % change when available.
 - For mutual funds: always mention NAV, fund category, and management company.
 - For insurance: always reference the specific policy/company from the knowledge base.
@@ -59,27 +64,58 @@ Rules:
 - Cite your sources at the end of data-heavy responses.
 
 Tool usage strategy:
-- When the user asks about an uploaded document or file: ALWAYS call searchConversationDocument first.
-- For specific financial figures from company reports (revenue, profit, assets, EPS, balance sheet items, income statement line items, cash flows): ALWAYS use queryFinancialTables first. This tool has structured numerical data — use it for precise numbers and comparisons.
-- IMPORTANT: If queryFinancialTables returns empty or no results for a company, ALWAYS follow up with searchKnowledge using company and period filters. The data may be in the knowledge base as unstructured text rather than extracted tables.
-- For general information, qualitative analysis, management commentary, or notes from reports: use searchKnowledge with domain='financials' and pass the company name and period as filters.
-- searchKnowledge supports company and period filters — ALWAYS pass these when the user asks about a specific company or time period. Example: searchKnowledge({query: "operating profit", domain: "financials", company: "PTCL", period: "Q1 2026"}).
-- For financial analysis questions: chain queryFinancialTables (for structured numbers) with searchKnowledge (for qualitative context + unstructured numbers). Present numbers in markdown tables.
-- Company name matching: Both queryFinancialTables and searchKnowledge automatically resolve tickers and company name variations (e.g. "NPL" → "Nishat Power Limited", "PTCL" → "Pakistan Telecommunication Company Ltd"). You do NOT need to resolve names yourself — just pass whatever the user said.
-- If queryFinancialTables returns no results for a company, try searchCompanies to verify the company exists, then retry with the exact company_name from the result.
-- For "best performing", "top", or ranking questions: use queryMutualFunds or getTopStocks with appropriate sortBy and sortOrder desc.
-- For period-based returns (e.g. "best fund over 5 years"): use queryMutualFunds with sortBy='return' and returnPeriodMonths (12=1yr, 36=3yr, 60=5yr).
-- For category-specific queries (equity funds, money market, Islamic): use the category filter on queryMutualFunds.
-- For provider/AMC-specific queries (e.g. "HBL funds"): first call getFundProviders, then queryMutualFunds with providerId.
-- For sector-specific stock queries (banking stocks, cement sector): first call listSectors to find the sector ID, then use getTopStocks or searchCompanies with sectorId.
-- For performance trends or historical analysis: use getFundNavHistory (up to 5 years) or getStockHistory (up to 5 years).
-- For insurance, financial literacy, or general knowledge questions: use searchKnowledge with the appropriate domain filter.
-- For taxation questions (slabs, ordinance, rules, exemptions): ALWAYS use searchTaxDocs.
-- Chain multiple tools when needed — e.g., queryFinancialTables to find financial data, then searchKnowledge for qualitative context.
-- For comparison questions: retrieve data for all items being compared, then present in a markdown table.
-- For recent Pakistan economic news, market events, or "what's happening" questions: call getRecentHeadlines first for a broad view, then searchRecentNews for topic-specific semantic retrieval.
-- When citing news, always include the source name and publication date at the end of the response.
-- Always try to answer the query using available tools. Only say you cannot if no combination of tools can produce the answer.
+
+[FINANCIAL FIGURES — PRIMARY PATH]
+- listFinancialDataInventory: USE FIRST whenever the user asks meta-questions like "what companies do you know", "what data do you have", "which periods are covered", OR before saying "I don't have data on X" — this tool lists every (company, period, table_type) tuple actually in the database. NEVER hallucinate or guess what's covered; query this. Cheap, non-vector. Optional company substring filter.
+- queryFinancialTables: PRIMARY tool for ANY specific financial figure question (revenue, profit, operating profit, assets, equity, EPS, cash flows, balance sheet items, income statement lines, key metrics). Returns structured rows from extracted_tables AND, when no structured tables match, falls back to ingested-document chunks under 'fallbackResults' — treat those chunks as authoritative source material. Auto-resolves company names ↔ tickers AND auto-normalizes fiscal periods (so "Q1 2026" matches "2026-03", "2025" matches "FY2025", etc.). If your filtered call returns nothing, the response includes a 'note' field listing which periods ARE available for that company — read it and offer the user data from a nearby period, don't just give up. Examples:
+    - queryFinancialTables({company: "HBL", tableType: "income_statement", fiscalPeriod: "Q1 2026"})
+    - queryFinancialTables({company: "PTCL", tableType: "all", fiscalPeriod: "2025"})
+  If both 'tables' AND 'fallbackResults' come back empty, THEN escalate to searchKnowledge.
+
+[DOCUMENTS & KNOWLEDGE — SECONDARY / QUALITATIVE]
+- searchConversationDocument: ALWAYS call FIRST when the user references an uploaded file/document or asks "what does this document say".
+- searchKnowledge: Use for (a) qualitative content — management commentary, report notes, insurance policy details, financial literacy, regulatory context — and (b) as the FALLBACK when queryFinancialTables returns no tables and no fallbackResults. Pass domain ('financials', 'insurance', etc.) and optionally company/period filters. Auto-resolves company name variations.
+    - searchKnowledge({query: "management commentary on margins", domain: "financials", company: "HBL", period: "Q1 2026"})
+- searchTaxDocs: ALWAYS use for ANY taxation question (slabs, FBR circulars, ordinances, rules, exemptions, tax filing).
+
+[PSX STOCKS & COMPANIES]
+- getMarketSummary: Use for KSE-100, KSE-30, market overview, daily index change, total market volume questions.
+- searchCompanies: Use to find a ticker by company name, browse companies, or filter by sector. CALL THIS FIRST whenever you don't know the exact PSX ticker — NEVER guess or invent tickers. Example: user says "Meezan Bank" → searchCompanies({query: "Meezan"}) → returns symbol "MEBL".
+- getStockDetail: Latest price, sector, description for one stock. Pass the PSX ticker. Will fuzzy-match a company name as a fallback, but exact tickers are more reliable.
+- getStockHistory: Daily price history for trend analysis (up to 5 years / 1825 days). Pass the PSX ticker.
+- getTopStocks: Top performers or most active stocks. sortBy = 'value_traded' | 'volume' | 'close_price'. Optional sectorId filter.
+- listSectors: List all PSX sectors with IDs. Call this BEFORE filtering by sector in getTopStocks or searchCompanies.
+- RECOVERY RULE: If getStockDetail or getStockHistory returns "not found", IMMEDIATELY call searchCompanies with the user's original phrase to find the correct ticker, then retry. Do NOT give up after one failure.
+
+[MUTUAL FUNDS]
+- queryMutualFunds: Search/filter funds by category, risk, returns. For "best fund over X years" use sortBy='return' with returnPeriodMonths (12=1yr, 36=3yr, 60=5yr). For category questions (equity, money market, Islamic) use the category filter.
+- getFundDetail: Full details on a specific fund — use when the user asks about one named fund.
+- getFundNavHistory: NAV price history (up to 5 years) for fund performance trends.
+- getFundProviders: List all AMCs / fund management companies. Call FIRST for provider-specific queries — example: "HBL funds" → getFundProviders → queryMutualFunds({providerId}).
+
+[USER-SPECIFIC — authenticated]
+- getUserPortfolio: User's portfolios and holdings. Use for "my portfolio", "what stocks do I own", "show my investments", "my holdings".
+- getUserWatchlist: User's saved stocks/funds. Use for "my watchlist", "saved stocks", "what am I tracking".
+- getPortfolioInsight: AI-generated portfolio health summary (P/L analysis, news impact on holdings). Use for "analyze my portfolio", "how am I doing", "portfolio health".
+
+[NEWS & EVENTS]
+- getRecentHeadlines: Broad view of recent Pakistan economic/business news, optionally filtered by sentiment.
+- searchRecentNews: Semantic search of news for topic-specific retrieval.
+- For "what's happening" questions, call getRecentHeadlines first, then searchRecentNews to drill in. Always cite source name and publication date.
+
+[WEB SEARCH — LAST IN ORDER, BUT NOT OPTIONAL]
+- webSearch: Internal tools take priority — call them first. After that, you MUST call webSearch any time your would-be answer is incomplete, stale, or only partially supported by internal data. Do NOT tell the user "I don't have that" or "data not available" without first attempting webSearch. Treat it as the gap-filler that turns a half-answer into a full one.
+- Trigger webSearch (after internal tools) whenever the user asks for: current/intraday prices, "today's" anything, live ratios (P/E, P/B, dividend yield) computed off live price, the latest quarterly/annual print, breaking news, current macro indicators (CPI, policy rate, FX), or any figure the user calls "current", "latest", "now", or with a date newer than what internal tools returned.
+- Use the most current data possible. Set recency='day' for intraday/live, 'week' for very recent moves, 'month' for recent earnings or reports, 'year' for older context, omit for general/historical.
+- Returns: 'knowledgeGraph' (entity facts), 'answerBox' (Google direct answer), and 'results' (organic snippets + URLs). Read knowledgeGraph and answerBox first — they're usually the highest-signal hit.
+- ALWAYS cite the source URL inline and explicitly note that figure came from the web (not Finasaan's verified internal database). If web and internal data disagree, present both and flag the discrepancy.
+
+[CHAINING & PRINCIPLES]
+- For valuation questions (P/E, P/B, fair value, "is X overvalued"): (1) searchCompanies to resolve ticker if unsure; (2) getStockDetail for current price; (3) queryFinancialTables for net profit, equity, shares outstanding, revenue, EPS (it auto-falls-back to document chunks if no structured tables exist); (4) if queryFinancialTables returns nothing usable, escalate to searchKnowledge; (5) calculate P/E = price ÷ EPS, P/B = market cap ÷ book value yourself; (6) compare to sector or historical multiples. Show your derivation.
+- For specific financial figures ("HBL Q1 2026 operating profit", "PTCL revenue", "MCB net profit"): start with queryFinancialTables({company, fiscalPeriod}). Inspect BOTH the 'tables' array and the 'fallbackResults' array — answer from whichever is populated. Only escalate to searchKnowledge → webSearch if BOTH are empty. NEVER conclude "no data found" until you've tried queryFinancialTables AND searchKnowledge.
+- For comparison questions: gather data for all items, then present in a markdown table.
+- For sector-wide questions: listSectors → getTopStocks(sectorId) or searchCompanies(sectorId).
+- Always try internal tools first. Then, if the answer is still incomplete, stale, or unsupported, call webSearch to fill the gap — this is required, not optional. Only say "I cannot find this" after BOTH internal tools AND webSearch have failed to produce an answer.
 `;
 
 // ============================================
@@ -165,45 +201,42 @@ export async function handleStream(
       modelConfig.id,
     );
 
-    // Sanitize messages: remove any orphaned tool-call parts that don't have
-    // matching tool-result parts. This prevents MissingToolResultsError when
-    // a previous stream errored mid-tool-call and the result was never saved.
+    // Sanitize messages: drop any tool parts from previous assistant turns
+    // that never produced a result. AI SDK v6 represents tool invocations as
+    // `tool-{name}` or `dynamic-tool` parts with a `state` field. If a prior
+    // stream errored mid-tool-call, those parts get persisted in `state:
+    // 'input-streaming'` or `'input-available'` (no output) — feeding them
+    // back into the next request triggers MissingToolResultsError on the
+    // provider side, which is one of the main causes of repeat stream
+    // failures we see on Groq Llama.
     const sanitizedMessages = (
       messages as Array<{
         role: string;
-        parts?: Array<{
-          type: string;
-          toolCallId?: string;
-          [k: string]: unknown;
-        }>;
+        parts?: Array<{ type: string; state?: string; [k: string]: unknown }>;
         [k: string]: unknown;
       }>
-    ).map((msg) => {
-      if (msg.role !== "assistant" || !Array.isArray(msg.parts)) return msg;
+    )
+      .map((msg) => {
+        if (msg.role !== "assistant" || !Array.isArray(msg.parts)) return msg;
 
-      // Collect all tool-result IDs across all messages
-      const resultIds = new Set<string>();
-      for (const m of messages as Array<{
-        parts?: Array<{ type: string; toolCallId?: string }>;
-      }>) {
-        if (!Array.isArray(m.parts)) continue;
-        for (const p of m.parts) {
-          if (p.type === "tool-result" && p.toolCallId) {
-            resultIds.add(p.toolCallId);
-          }
-        }
-      }
+        const filteredParts = msg.parts.filter((p) => {
+          const isToolPart =
+            p.type === "dynamic-tool" || p.type.startsWith("tool-");
+          if (!isToolPart) return true;
+          // Keep only tool parts that reached a terminal state.
+          return p.state === "output-available" || p.state === "output-error";
+        });
 
-      // Filter out tool-call parts without matching results
-      const filteredParts = msg.parts.filter((p) => {
-        if (p.type === "tool-call" && p.toolCallId) {
-          return resultIds.has(p.toolCallId);
-        }
-        return true;
+        return { ...msg, parts: filteredParts };
+      })
+      // Drop assistant turns that became empty after sanitization. An
+      // assistant message with no parts gets converted to an empty content
+      // array, which Groq rejects as a malformed message in the next turn.
+      .filter((msg) => {
+        if (msg.role !== "assistant") return true;
+        if (!Array.isArray(msg.parts)) return true;
+        return msg.parts.length > 0;
       });
-
-      return { ...msg, parts: filteredParts };
-    });
 
     // Convert UI messages → model messages (AI SDK v6 async)
     const modelMessages = await convertToModelMessages(
@@ -230,6 +263,29 @@ export async function handleStream(
       })),
     });
 
+    // Track partial assistant output so we can persist it even if the stream
+    // errors mid-flight (e.g. Groq drops the connection after a tool call).
+    let partialText = "";
+    let persisted = false;
+    const flushPersist = async (
+      text: string,
+      toolsUsed: string[],
+      errorMessage?: string,
+    ) => {
+      if (persisted) return;
+      persisted = true;
+      try {
+        await persistMessages(supabase, session.id, latestText, text, {
+          model: modelConfig.id,
+          toolsUsed,
+          sessionId: session.id,
+          ...(errorMessage ? { error: errorMessage } : {}),
+        });
+      } catch (err) {
+        console.error("[handleStream] Failed to persist messages:", err);
+      }
+    };
+
     // Stream response
     const result = streamText({
       model,
@@ -252,18 +308,18 @@ ${pc.content ? pc.content : "No text visible."}
       tools,
       stopWhen: stepCountIs(12),
       temperature: 0.1,
-      maxTokens: modelConfig.maxOutputTokens,
-      // Repair tool calls where the LLM sends strings instead of numbers/booleans
+      maxOutputTokens: modelConfig.maxOutputTokens,
+      // Repair tool calls where the LLM sends strings instead of numbers/booleans.
+      // AI SDK v6: `toolCall.input` is the stringified JSON arg payload.
       experimental_repairToolCall: async ({ toolCall, error }) => {
         try {
-          const args = JSON.parse(toolCall.args);
-          // Coerce string values that look like numbers or booleans
+          const args = JSON.parse(toolCall.input);
           for (const key of Object.keys(args)) {
             const val = args[key];
             if (typeof val === "string") {
-              if (/^\d+$/.test(val)) {
+              if (/^-?\d+$/.test(val)) {
                 args[key] = parseInt(val, 10);
-              } else if (/^\d+\.\d+$/.test(val)) {
+              } else if (/^-?\d+\.\d+$/.test(val)) {
                 args[key] = parseFloat(val);
               } else if (val === "true" || val === "false") {
                 args[key] = val === "true";
@@ -274,7 +330,7 @@ ${pc.content ? pc.content : "No text visible."}
             `[repairToolCall] Fixed args for ${toolCall.toolName}:`,
             args,
           );
-          return { ...toolCall, args: JSON.stringify(args) };
+          return { ...toolCall, input: JSON.stringify(args) };
         } catch {
           console.error(
             `[repairToolCall] Could not repair ${toolCall.toolName}:`,
@@ -283,25 +339,48 @@ ${pc.content ? pc.content : "No text visible."}
           return null;
         }
       },
-      onFinish: async ({ text, steps }) => {
-        // Persist after stream completes
-        try {
-          const toolsUsed = steps.flatMap((s) =>
-            (s.toolCalls ?? []).map((tc) => tc.toolName),
-          );
-          await persistMessages(supabase, session.id, latestText, text, {
-            model: modelConfig.id,
-            toolsUsed,
-            sessionId: session.id,
-          });
-        } catch (err) {
-          console.error("[onFinish] Failed to persist messages:", err);
+      // Mirror text deltas so we can persist whatever the model managed to
+      // produce even if the stream errors before onFinish fires.
+      onChunk: ({ chunk }) => {
+        if (chunk.type === "text-delta") {
+          partialText += (chunk as { text?: string }).text ?? "";
         }
+      },
+      onError: ({ error }) => {
+        console.error(
+          "[handleStream] streamText error:",
+          error instanceof Error ? error.stack ?? error.message : error,
+        );
+      },
+      onFinish: async ({ text, steps }) => {
+        const toolsUsed = steps.flatMap((s) =>
+          (s.toolCalls ?? []).map((tc) => tc.toolName),
+        );
+        await flushPersist(text || partialText, toolsUsed);
       },
     });
 
     // Return session id in response headers so client can track it
-    const response = result.toUIMessageStreamResponse();
+    const response = result.toUIMessageStreamResponse({
+      // Surface real error messages to the client. Without this, AI SDK's
+      // default emits a generic 'An error occurred.' which makes Groq stream
+      // failures impossible to debug from the UI.
+      onError: (error) => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === "string"
+              ? error
+              : "Stream failed. Please try again.";
+        // Persist the user message + whatever partial content we got so the
+        // turn isn't lost (the user sees their question vanish on reload
+        // otherwise).
+        c.executionCtx?.waitUntil?.(
+          flushPersist(partialText, [], message).catch(() => {}),
+        );
+        return message;
+      },
+    });
     const headers = new Headers(response.headers);
     headers.set("X-Session-Id", session.id);
     return new Response(response.body, { status: response.status, headers });
@@ -341,6 +420,7 @@ export async function handleUploadAttachment(
       sessionId,
       user.id,
       file,
+      c.env,
     );
 
     return c.json({ success: true, ...result });
@@ -458,13 +538,13 @@ export async function handleUploadPDF(
       );
 
       if (isScanned || tableHeavy) {
-        // --- Path B / Path C: Vision extraction ---
+        // --- Path B / Path C: LLM page-extraction (text-only on Workers) ---
 
-        // Guard: each vision call is one fetch() subrequest. Cap at MAX_VISION_PAGES
+        // Guard: each call is one fetch() subrequest. Cap at MAX_VISION_PAGES
         // so we never exceed the CF Workers subrequest limit on large documents.
         if (visionPagesAttempted >= MAX_VISION_PAGES) {
           console.log(
-            `[UploadPDF] Vision cap (${MAX_VISION_PAGES}) reached at page ${pageNumber}, accumulating as prose`
+            `[UploadPDF] Extraction cap (${MAX_VISION_PAGES}) reached at page ${pageNumber}, accumulating as prose`
           );
           visionPagesCapped++;
           if (pageText.trim().length > 0) proseBuffer.push(pageText);
@@ -472,35 +552,24 @@ export async function handleUploadPDF(
         }
         visionPagesAttempted++;
 
-        let base64PNG: string | null = null;
+        let pageResult;
         try {
-          base64PNG = await renderPageToBase64PNG(pdfData, pageNumber);
-        } catch (renderErr) {
-          console.warn(
-            `[UploadPDF] renderPageToBase64PNG failed page ${pageNumber}, using text fallback:`,
-            renderErr instanceof Error ? renderErr.message : renderErr
-          );
-        }
-
-        let visionResult;
-        try {
-          visionResult = await extractPageViaVision(
+          pageResult = await extractPageTablesAndProse(
             aiGatewayToken,
-            base64PNG,
+            pageText,
             {
               company_name: company || "Unknown",
               doc_type: docType || undefined,
               pageNumber,
               totalPages,
-            },
-            pageText // fallback text when base64PNG is null
+            }
           );
           visionPagesProcessed++;
-        } catch (visionErr) {
-          // Vision failed entirely — treat page as prose (fallback)
+        } catch (extractErr) {
+          // LLM call failed — fall back to raw page text as prose
           console.warn(
-            `[UploadPDF] Vision extraction failed page ${pageNumber}, treating as prose:`,
-            visionErr instanceof Error ? visionErr.message : visionErr
+            `[UploadPDF] Page extraction failed page ${pageNumber}, treating as prose:`,
+            extractErr instanceof Error ? extractErr.message : extractErr
           );
           if (pageText.trim().length > 0) {
             proseBuffer.push(pageText);
@@ -508,14 +577,14 @@ export async function handleUploadPDF(
           continue;
         }
 
-        // Accumulate vision prose
-        if (visionResult.prose.trim().length > 50) {
-          proseBuffer.push(visionResult.prose);
+        // Accumulate model-cleaned prose
+        if (pageResult.prose.trim().length > 50) {
+          proseBuffer.push(pageResult.prose);
         }
 
         // Collect valid tables for batch storage
-        for (const table of visionResult.tables) {
-          if (isVisionTableValid(table)) {
+        for (const table of pageResult.tables) {
+          if (isPageTableValid(table)) {
             const record = buildExtractedTableRecord(
               table,
               documentHash,
@@ -525,7 +594,7 @@ export async function handleUploadPDF(
             tablesToStore.push(record);
           } else {
             console.log(
-              `[UploadPDF] Vision table invalid on page ${pageNumber}, skipping: ${table.table_name || "(unnamed)"}`
+              `[UploadPDF] Extracted table invalid on page ${pageNumber}, skipping: ${table.table_name || "(unnamed)"}`
             );
           }
         }
@@ -569,7 +638,7 @@ export async function handleUploadPDF(
         const batchSize = 20;
         for (let i = 0; i < texts.length; i += batchSize) {
           const batch = texts.slice(i, i + batchSize);
-          const batchEmbeddings = await generateEmbeddings(ai, batch);
+          const batchEmbeddings = await generateEmbeddings(ai, batch, c.env);
           allEmbeddings.push(...batchEmbeddings);
         }
 
