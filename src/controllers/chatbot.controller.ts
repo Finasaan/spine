@@ -103,15 +103,19 @@ Tool usage strategy:
 - searchRecentNews: Semantic search of news for topic-specific retrieval.
 - For "what's happening" questions, call getRecentHeadlines first, then searchRecentNews to drill in. Always cite source name and publication date.
 
-[WEB SEARCH — LAST RESORT]
-- webSearch: Call ONLY after all relevant internal tools have returned insufficient data. Good for: live P/E ratios not in DB, recent quarterly results not yet indexed, current index levels, Pakistan macro data, latest news Finasaan hasn't ingested. Set recency='day' or 'week' for live market data, 'month' for recent earnings. ALWAYS cite the source URL and note the data is from the web (not Finasaan's verified database).
+[WEB SEARCH — LAST IN ORDER, BUT NOT OPTIONAL]
+- webSearch: Internal tools take priority — call them first. After that, you MUST call webSearch any time your would-be answer is incomplete, stale, or only partially supported by internal data. Do NOT tell the user "I don't have that" or "data not available" without first attempting webSearch. Treat it as the gap-filler that turns a half-answer into a full one.
+- Trigger webSearch (after internal tools) whenever the user asks for: current/intraday prices, "today's" anything, live ratios (P/E, P/B, dividend yield) computed off live price, the latest quarterly/annual print, breaking news, current macro indicators (CPI, policy rate, FX), or any figure the user calls "current", "latest", "now", or with a date newer than what internal tools returned.
+- Use the most current data possible. Set recency='day' for intraday/live, 'week' for very recent moves, 'month' for recent earnings or reports, 'year' for older context, omit for general/historical.
+- Returns: 'knowledgeGraph' (entity facts), 'answerBox' (Google direct answer), and 'results' (organic snippets + URLs). Read knowledgeGraph and answerBox first — they're usually the highest-signal hit.
+- ALWAYS cite the source URL inline and explicitly note that figure came from the web (not Finasaan's verified internal database). If web and internal data disagree, present both and flag the discrepancy.
 
 [CHAINING & PRINCIPLES]
 - For valuation questions (P/E, P/B, fair value, "is X overvalued"): (1) searchCompanies to resolve ticker if unsure; (2) getStockDetail for current price; (3) queryFinancialTables for net profit, equity, shares outstanding, revenue, EPS (it auto-falls-back to document chunks if no structured tables exist); (4) if queryFinancialTables returns nothing usable, escalate to searchKnowledge; (5) calculate P/E = price ÷ EPS, P/B = market cap ÷ book value yourself; (6) compare to sector or historical multiples. Show your derivation.
 - For specific financial figures ("HBL Q1 2026 operating profit", "PTCL revenue", "MCB net profit"): start with queryFinancialTables({company, fiscalPeriod}). Inspect BOTH the 'tables' array and the 'fallbackResults' array — answer from whichever is populated. Only escalate to searchKnowledge → webSearch if BOTH are empty. NEVER conclude "no data found" until you've tried queryFinancialTables AND searchKnowledge.
 - For comparison questions: gather data for all items, then present in a markdown table.
 - For sector-wide questions: listSectors → getTopStocks(sectorId) or searchCompanies(sectorId).
-- Always try internal tools first. Only fall back to webSearch when internal sources are exhausted. Only say "I cannot find this" if NO combination of tools (including webSearch) produces an answer.
+- Always try internal tools first. Then, if the answer is still incomplete, stale, or unsupported, call webSearch to fill the gap — this is required, not optional. Only say "I cannot find this" after BOTH internal tools AND webSearch have failed to produce an answer.
 `;
 
 // ============================================

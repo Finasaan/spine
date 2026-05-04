@@ -7,7 +7,7 @@ declare global {
   interface Env {
     CLOUDFLARE_ACCOUNT_ID?: string;
     CLOUDFLARE_API_TOKEN?: string;
-    BRAVE_SEARCH_API_KEY?: string;
+    SERPER_API_KEY?: string;
   }
   type CloudflareBindings = Env;
 }

@@ -21,14 +21,14 @@ export function createAllTools(
   ai: Ai,
   userId: string,
   sessionId: string,
-  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string; BRAVE_SEARCH_API_KEY?: string }
+  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string; SERPER_API_KEY?: string }
 ) {
   return {
     ...createKnowledgeTools(supabase, ai, sessionId, env),
     ...createMarketTools(supabase),
     ...createFundsTools(supabase),
     ...createUserTools(supabase, userId, env as any),
-    ...createWebTools(env?.BRAVE_SEARCH_API_KEY),
+    ...createWebTools(env?.SERPER_API_KEY),
   };
 }
 

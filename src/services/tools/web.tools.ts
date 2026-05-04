@@ -1,39 +1,56 @@
 /**
  * Web Search Tools — FinasaanGPT
- * Brave Search fallback for data not available in internal DB.
+ * Serper.dev (Google Search) fallback for data not available in internal DB.
  * Last-resort only — internal tools always take priority.
  */
 
 import { tool } from "ai";
 import { z } from "zod";
 
-const BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
+const SERPER_SEARCH_URL = "https://google.serper.dev/search";
 
 const FRESHNESS_MAP = {
-  day: "pd",
-  week: "pw",
-  month: "pm",
-  year: "py",
+  day: "qdr:d",
+  week: "qdr:w",
+  month: "qdr:m",
+  year: "qdr:y",
 } as const;
 
-interface BraveWebResult {
+interface SerperOrganicResult {
   title: string;
-  url: string;
+  link: string;
+  snippet?: string;
+  date?: string;
+  position?: number;
+}
+
+interface SerperKnowledgeGraph {
+  title?: string;
+  type?: string;
+  website?: string;
   description?: string;
-  age?: string;
-  page_age?: string;
+  descriptionSource?: string;
+  descriptionLink?: string;
+  attributes?: Record<string, string>;
 }
 
-interface BraveSearchResponse {
-  web?: {
-    results?: BraveWebResult[];
-  };
+interface SerperAnswerBox {
+  title?: string;
+  answer?: string;
+  snippet?: string;
+  link?: string;
 }
 
-export function createWebTools(braveApiKey?: string) {
+interface SerperSearchResponse {
+  knowledgeGraph?: SerperKnowledgeGraph;
+  answerBox?: SerperAnswerBox;
+  organic?: SerperOrganicResult[];
+}
+
+export function createWebTools(serperApiKey?: string) {
   return {
     webSearch: tool({
-      description: `Brave Search over the public web. LAST RESORT ONLY — call this strictly AFTER all relevant internal tools have come back empty (queryFinancialTables tables AND fallbackResults empty, searchKnowledge empty, getStockDetail/getStockHistory/getRecentHeadlines/searchRecentNews/searchTaxDocs all insufficient). Good for: live P/E or other live ratios not stored in DB, very recent quarterly results not yet ingested, current KSE-100 levels intraday, Pakistan macro indicators, breaking news Finasaan has not yet pulled. Use 'recency' to bound the time window: 'day'/'week' for live market data, 'month' for recent earnings, 'year' for older context, omit for historical. ALWAYS cite the source URL in your response and explicitly note the data is from the web (not Finasaan's verified internal database).`,
+      description: `Google web search via Serper. Last in priority order — call internal tools first — but NOT optional: you MUST call this whenever your would-be answer is incomplete, stale, or only partially supported by internal data. Do not tell the user "I don't have that" without first trying webSearch. Required follow-up call after internal tools whenever the user asks for: current/intraday prices, "today's" anything, live ratios (P/E, P/B, dividend yield) computed off a live price, the latest quarterly or annual print, breaking news, current macro indicators (CPI, policy rate, FX), or any figure described as "current", "latest", or "now". Always retrieve the most current data possible: set recency='day' for intraday/live, 'week' for very recent moves, 'month' for recent earnings, 'year' for older context, omit for historical. Returns 'knowledgeGraph' (entity facts), 'answerBox' (Google's direct answer when available), and 'results' (organic snippets with URLs) — read knowledgeGraph and answerBox first, they are usually the highest-signal hit. ALWAYS cite the source URL inline and explicitly note the figure came from the web (not Finasaan's verified internal database). If web and internal data disagree, present both and flag the discrepancy.`,
       inputSchema: z.object({
         query: z.string().describe(
           "Specific search query. Include company name/ticker and the exact metric needed. E.g. 'OGDC Pakistan P/E ratio 2025', 'KSE-100 index today', 'HBL earnings Q1 2025 Pakistan'."
@@ -46,50 +63,72 @@ export function createWebTools(braveApiKey?: string) {
           ),
       }),
       execute: async ({ query, recency }) => {
-        if (!braveApiKey) {
+        if (!serperApiKey) {
           return { error: "Web search is not configured (missing API key)." };
         }
 
-        const params = new URLSearchParams({
+        const body: Record<string, unknown> = {
           q: query,
-          count: "5",
-          search_lang: "en",
-          safesearch: "moderate",
-        });
+          gl: "pk",
+          hl: "en",
+          num: 5,
+        };
 
         if (recency) {
-          params.set("freshness", FRESHNESS_MAP[recency]);
+          body.tbs = FRESHNESS_MAP[recency];
         }
 
         try {
-          const res = await fetch(`${BRAVE_SEARCH_URL}?${params.toString()}`, {
+          const res = await fetch(SERPER_SEARCH_URL, {
+            method: "POST",
             headers: {
-              Accept: "application/json",
-              "Accept-Encoding": "gzip",
-              "X-Subscription-Token": braveApiKey,
+              "Content-Type": "application/json",
+              "X-API-KEY": serperApiKey,
             },
+            body: JSON.stringify(body),
           });
 
           if (!res.ok) {
-            const body = await res.text().catch(() => "");
+            const text = await res.text().catch(() => "");
             return {
-              error: `Brave Search returned ${res.status}: ${body.slice(0, 200)}`,
+              error: `Serper Search returned ${res.status}: ${text.slice(0, 200)}`,
             };
           }
 
-          const data = (await res.json()) as BraveSearchResponse;
-          const results = (data?.web?.results ?? []).slice(0, 5);
+          const data = (await res.json()) as SerperSearchResponse;
+          const organic = (data?.organic ?? []).slice(0, 5);
 
-          if (!results.length) {
+          const knowledgeGraph = data?.knowledgeGraph
+            ? {
+                title: data.knowledgeGraph.title ?? null,
+                type: data.knowledgeGraph.type ?? null,
+                website: data.knowledgeGraph.website ?? null,
+                description: data.knowledgeGraph.description ?? null,
+                source: data.knowledgeGraph.descriptionLink ?? null,
+                attributes: data.knowledgeGraph.attributes ?? null,
+              }
+            : null;
+
+          const answerBox = data?.answerBox
+            ? {
+                title: data.answerBox.title ?? null,
+                answer: data.answerBox.answer ?? data.answerBox.snippet ?? null,
+                link: data.answerBox.link ?? null,
+              }
+            : null;
+
+          if (!organic.length && !knowledgeGraph && !answerBox) {
             return { results: [], message: "No web results found for this query." };
           }
 
           return {
-            results: results.map((r) => ({
+            knowledgeGraph,
+            answerBox,
+            results: organic.map((r) => ({
               title: r.title,
-              url: r.url,
-              snippet: r.description ?? "",
-              age: r.age ?? r.page_age ?? null,
+              url: r.link,
+              snippet: r.snippet ?? "",
+              age: r.date ?? null,
             })),
           };
         } catch (err) {
