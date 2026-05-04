@@ -21,15 +21,14 @@ import {
 } from "../services/chatbot.service";
 import { generateEmbeddings } from "../services/ai.service";
 import {
-  extractPageViaVision,
-  isVisionTableValid,
+  extractPageTablesAndProse,
+  isPageTableValid,
   buildExtractedTableRecord,
   storeExtractedTables,
 } from "../services/extraction.service";
 import {
   extractPerPageTexts,
   isTableHeavyPage,
-  renderPageToBase64PNG,
   countNonWhitespace,
   chunkText,
 } from "../services/pdf.service";
@@ -532,13 +531,13 @@ export async function handleUploadPDF(
       );
 
       if (isScanned || tableHeavy) {
-        // --- Path B / Path C: Vision extraction ---
+        // --- Path B / Path C: LLM page-extraction (text-only on Workers) ---
 
-        // Guard: each vision call is one fetch() subrequest. Cap at MAX_VISION_PAGES
+        // Guard: each call is one fetch() subrequest. Cap at MAX_VISION_PAGES
         // so we never exceed the CF Workers subrequest limit on large documents.
         if (visionPagesAttempted >= MAX_VISION_PAGES) {
           console.log(
-            `[UploadPDF] Vision cap (${MAX_VISION_PAGES}) reached at page ${pageNumber}, accumulating as prose`
+            `[UploadPDF] Extraction cap (${MAX_VISION_PAGES}) reached at page ${pageNumber}, accumulating as prose`
           );
           visionPagesCapped++;
           if (pageText.trim().length > 0) proseBuffer.push(pageText);
@@ -546,35 +545,24 @@ export async function handleUploadPDF(
         }
         visionPagesAttempted++;
 
-        let base64PNG: string | null = null;
+        let pageResult;
         try {
-          base64PNG = await renderPageToBase64PNG(pdfData, pageNumber);
-        } catch (renderErr) {
-          console.warn(
-            `[UploadPDF] renderPageToBase64PNG failed page ${pageNumber}, using text fallback:`,
-            renderErr instanceof Error ? renderErr.message : renderErr
-          );
-        }
-
-        let visionResult;
-        try {
-          visionResult = await extractPageViaVision(
+          pageResult = await extractPageTablesAndProse(
             aiGatewayToken,
-            base64PNG,
+            pageText,
             {
               company_name: company || "Unknown",
               doc_type: docType || undefined,
               pageNumber,
               totalPages,
-            },
-            pageText // fallback text when base64PNG is null
+            }
           );
           visionPagesProcessed++;
-        } catch (visionErr) {
-          // Vision failed entirely — treat page as prose (fallback)
+        } catch (extractErr) {
+          // LLM call failed — fall back to raw page text as prose
           console.warn(
-            `[UploadPDF] Vision extraction failed page ${pageNumber}, treating as prose:`,
-            visionErr instanceof Error ? visionErr.message : visionErr
+            `[UploadPDF] Page extraction failed page ${pageNumber}, treating as prose:`,
+            extractErr instanceof Error ? extractErr.message : extractErr
           );
           if (pageText.trim().length > 0) {
             proseBuffer.push(pageText);
@@ -582,14 +570,14 @@ export async function handleUploadPDF(
           continue;
         }
 
-        // Accumulate vision prose
-        if (visionResult.prose.trim().length > 50) {
-          proseBuffer.push(visionResult.prose);
+        // Accumulate model-cleaned prose
+        if (pageResult.prose.trim().length > 50) {
+          proseBuffer.push(pageResult.prose);
         }
 
         // Collect valid tables for batch storage
-        for (const table of visionResult.tables) {
-          if (isVisionTableValid(table)) {
+        for (const table of pageResult.tables) {
+          if (isPageTableValid(table)) {
             const record = buildExtractedTableRecord(
               table,
               documentHash,
@@ -599,7 +587,7 @@ export async function handleUploadPDF(
             tablesToStore.push(record);
           } else {
             console.log(
-              `[UploadPDF] Vision table invalid on page ${pageNumber}, skipping: ${table.table_name || "(unnamed)"}`
+              `[UploadPDF] Extracted table invalid on page ${pageNumber}, skipping: ${table.table_name || "(unnamed)"}`
             );
           }
         }
