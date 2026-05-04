@@ -53,7 +53,6 @@ export function createWebTools(braveApiKey?: string) {
         const params = new URLSearchParams({
           q: query,
           count: "5",
-          country: "PK",
           search_lang: "en",
           safesearch: "moderate",
         });

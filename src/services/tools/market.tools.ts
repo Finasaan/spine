@@ -120,26 +120,39 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     getStockDetail: tool({
       description:
-        "Get detailed info about a specific PSX stock including latest price data. Input: ticker symbol string like PTCL, TRG, HBL.",
+        "Get detailed info about a specific PSX stock including latest price data. Pass the PSX ticker symbol (e.g. PTCL, HBL, MEBL). If you don't know the exact ticker, call searchCompanies first to resolve it.",
       inputSchema: z.object({
-        symbol: z.string().describe("PSX ticker symbol, e.g. PTCL or HBL"),
+        symbol: z.string().describe("PSX ticker symbol (e.g. PTCL, HBL) or company name if ticker is unknown"),
       }),
       execute: async ({ symbol }) => {
         try {
-          // Get company info
-          const { data: company, error: cErr } = await supabase
+          // Pass 1: exact ticker match
+          let { data: company } = await supabase
             .from("companies")
             .select(
               "id, symbol, company_name, sector_id, description, website_url, ceo_name",
             )
             .ilike("symbol", symbol)
-            .single();
+            .maybeSingle();
 
-          if (cErr || !company) {
+          // Pass 2: fuzzy match on ticker or company name
+          if (!company) {
+            const { data: fuzzy } = await supabase
+              .from("companies")
+              .select(
+                "id, symbol, company_name, sector_id, description, website_url, ceo_name",
+              )
+              .or(`symbol.ilike.%${symbol}%,company_name.ilike.%${symbol}%`)
+              .limit(1)
+              .maybeSingle();
+            company = fuzzy ?? null;
+          }
+
+          if (!company) {
             return {
               symbol,
               found: false,
-              error: `Company with symbol '${symbol}' not found`,
+              error: `Company '${symbol}' not found. Try searchCompanies to find the correct ticker.`,
             };
           }
 
@@ -307,9 +320,9 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     getStockHistory: tool({
       description:
-        "Get historical daily price data for a specific stock. Use for price trend analysis, performance over time, or chart data.",
+        "Get historical daily price data for a specific stock. Use for price trend analysis, performance over time, or chart data. Pass the PSX ticker symbol (e.g. ENGRO, HBL, MEBL). If you don't know the exact ticker, call searchCompanies first to resolve it.",
       inputSchema: z.object({
-        symbol: z.string().describe("PSX ticker symbol, e.g. ENGRO or HBL"),
+        symbol: z.string().describe("PSX ticker symbol (e.g. ENGRO, HBL) or company name if ticker is unknown"),
         days: z.coerce
           .number()
           .int()
@@ -323,18 +336,29 @@ export function createMarketTools(supabase: SupabaseClient) {
       }),
       execute: async ({ symbol, days }) => {
         try {
-          // Resolve company ID from symbol
-          const { data: company, error: cErr } = await supabase
+          // Pass 1: exact ticker match
+          let { data: company } = await supabase
             .from("companies")
             .select("id, symbol, company_name")
             .ilike("symbol", symbol)
-            .single();
+            .maybeSingle();
 
-          if (cErr || !company) {
+          // Pass 2: fuzzy match on ticker or company name
+          if (!company) {
+            const { data: fuzzy } = await supabase
+              .from("companies")
+              .select("id, symbol, company_name")
+              .or(`symbol.ilike.%${symbol}%,company_name.ilike.%${symbol}%`)
+              .limit(1)
+              .maybeSingle();
+            company = fuzzy ?? null;
+          }
+
+          if (!company) {
             return {
               symbol,
               found: false,
-              error: `Company '${symbol}' not found`,
+              error: `Company '${symbol}' not found. Try searchCompanies to find the correct ticker.`,
             };
           }
 
