@@ -10,6 +10,70 @@ import { SupabaseClient } from "@supabase/supabase-js";
 import { generateEmbedding } from "../ai.service";
 
 // ============================================================================
+// Fiscal Period Normalization
+// ============================================================================
+
+/**
+ * Generate equivalent fiscal-period strings for ilike matching.
+ * Stored values vary wildly across the corpus:
+ *   extracted_tables.fiscal_period: "2026-03", "2024-06-30", "2024-12-31"
+ *   finasaan_documents.metadata.period: "Q1 2026", "Q12026", "FY2025", "Q4 2024"
+ * A user/model query like "Q1 2026" must match all of these forms.
+ *
+ * Pakistani listed companies use a calendar fiscal year (Jan–Dec) by default,
+ * so Q1 ends Mar-31, Q2 Jun-30, Q3 Sep-30, Q4 Dec-31.
+ */
+function fiscalPeriodVariants(input: string): string[] {
+  const out = new Set<string>();
+  const trimmed = input.trim();
+  if (!trimmed) return [];
+  out.add(trimmed);
+  out.add(trimmed.replace(/\s+/g, ""));
+
+  const monthByQuarter: Record<number, string> = { 1: "03", 2: "06", 3: "09", 4: "12" };
+  const dayByQuarter: Record<number, string> = { 1: "31", 2: "30", 3: "30", 4: "31" };
+  const quarterByMonth: Record<number, number> = { 3: 1, 6: 2, 9: 3, 12: 4 };
+
+  // "Q1 2026", "Q1FY26", "Q1 FY 2026", etc → ISO month + alt forms
+  const qMatch = trimmed.match(/^Q\s*([1-4])\s*(?:FY\s*)?(\d{2,4})$/i);
+  if (qMatch) {
+    const q = parseInt(qMatch[1], 10);
+    const yr = qMatch[2].length === 2 ? "20" + qMatch[2] : qMatch[2];
+    const yr2 = yr.slice(-2);
+    out.add(`${yr}-${monthByQuarter[q]}`);
+    out.add(`${yr}-${monthByQuarter[q]}-${dayByQuarter[q]}`);
+    out.add(`Q${q} ${yr}`);
+    out.add(`Q${q}${yr}`);
+    out.add(`Q${q} FY${yr2}`);
+    out.add(`Q${q}FY${yr2}`);
+  }
+
+  // "2026-03", "2026-03-31" → quarter forms
+  const isoMatch = trimmed.match(/^(\d{4})-(\d{2})(?:-\d{2})?$/);
+  if (isoMatch) {
+    const yr = isoMatch[1];
+    const month = parseInt(isoMatch[2], 10);
+    const q = quarterByMonth[month];
+    if (q) {
+      out.add(`Q${q} ${yr}`);
+      out.add(`Q${q}${yr}`);
+      out.add(`${yr}-${isoMatch[2]}`);
+    }
+  }
+
+  // "FY2025", "FY 2025", "2025" → all year forms
+  const yMatch = trimmed.match(/^(?:FY\s*)?(\d{4})$/i);
+  if (yMatch) {
+    const yr = yMatch[1];
+    out.add(yr);
+    out.add(`FY${yr}`);
+    out.add(`FY ${yr}`);
+  }
+
+  return Array.from(out);
+}
+
+// ============================================================================
 // Company Name Resolution Helper
 // ============================================================================
 
@@ -311,10 +375,17 @@ export function createKnowledgeTools(
             query = query.eq("table_type", tableType);
           }
 
-          // Fiscal period filter (partial match on TEXT column)
-          if (fiscalPeriod?.trim()) {
-            const fp = fiscalPeriod.trim();
-            query = query.ilike("fiscal_period", `%${fp}%`);
+          // Fiscal period filter — OR across normalized variants so "Q1 2026"
+          // matches stored ISO forms like "2026-03", and "2025" matches "FY2025".
+          const periodVariants = fiscalPeriod?.trim()
+            ? fiscalPeriodVariants(fiscalPeriod.trim())
+            : [];
+          if (periodVariants.length > 0) {
+            const sanitize = (s: string) => s.replace(/[,()\\"]/g, "");
+            const periodOr = periodVariants
+              .map((v) => `fiscal_period.ilike."%${sanitize(v)}%"`)
+              .join(",");
+            query = query.or(periodOr);
           }
 
           const { data, error } = await query;
@@ -325,31 +396,112 @@ export function createKnowledgeTools(
             );
           }
 
-          const tables = (data || []) as Array<Record<string, unknown>>;
+          let tables = (data || []) as Array<Record<string, unknown>>;
+          let periodNote: string | null = null;
+
+          // No-period retry: if a period filter zeroed out the result but the
+          // company has data in other periods, return those rows with a note
+          // so the model can either answer from a nearby period or tell the
+          // user explicitly which periods we have.
+          if (tables.length === 0 && periodVariants.length > 0 && resolvedCompanyName) {
+            let retry = supabase
+              .from("extracted_tables")
+              .select(
+                "id, company_name, company_id, table_name, table_type, " +
+                  "fiscal_period, fiscal_period_end, currency, table_unit, " +
+                  "comparative, headers, rows, source_type, created_at",
+              )
+              .order("created_at", { ascending: false })
+              .limit(limit ?? 5);
+
+            if (company?.trim()) {
+              const names = await resolveCompanyNames(supabase, company.trim());
+              const sanitize = (s: string) => s.replace(/[,.:()\\"]/g, "");
+              const orClauses = names
+                .flatMap((n) => {
+                  const safe = sanitize(n);
+                  return [
+                    `company_name.ilike."%${safe}%"`,
+                    `company_id.ilike."%${safe}%"`,
+                  ];
+                })
+                .join(",");
+              retry = retry.or(orClauses);
+            }
+            if (tableType && tableType !== "all") {
+              retry = retry.eq("table_type", tableType);
+            }
+
+            const { data: retryData } = await retry;
+            const retryRows = (retryData || []) as Array<Record<string, unknown>>;
+            if (retryRows.length > 0) {
+              const periodsAvailable = Array.from(
+                new Set(retryRows.map((r) => r.fiscal_period).filter(Boolean) as string[])
+              );
+              periodNote =
+                `No tables found for "${fiscalPeriod}". Returning all available periods for this company. ` +
+                `Periods available: ${periodsAvailable.join(", ")}.`;
+              tables = retryRows;
+            }
+          }
 
           // --- SMART FALLBACK ---
           // If no structured tables, fetch ingested-document chunks tagged with
           // the same company (and optional period) directly from finasaan_documents.
-          // Bypasses semantic ranking — when the caller has already specified
-          // company+period, metadata equality is the right tool, not similarity.
-          if (tables.length === 0 && resolvedCompanyName) {
-            const trimmedPeriod = fiscalPeriod?.trim();
+          // OR's across ALL resolved company-name variants — single longest term
+          // misses "HBL"-style queries when only "Habib Bank Limited" is stored.
+          if (tables.length === 0 && company?.trim()) {
+            const names = await resolveCompanyNames(supabase, company.trim());
+            const sanitize = (s: string) => s.replace(/[,()\\"]/g, "");
 
-            let q = supabase
-              .from("finasaan_documents")
-              .select("content, metadata, source_url")
-              .eq("domain", "financials")
-              .filter("metadata->>company", "ilike", `%${resolvedCompanyName}%`);
+            const tryFallback = async (usePeriod: boolean) => {
+              let q = supabase
+                .from("finasaan_documents")
+                .select("content, metadata, source_url")
+                .eq("domain", "financials");
 
-            if (trimmedPeriod) {
-              q = q.filter("metadata->>period", "ilike", `%${trimmedPeriod}%`);
+              const nameOr = names
+                .map((n) => `metadata->>company.ilike."%${sanitize(n)}%"`)
+                .join(",");
+              q = q.or(nameOr);
+
+              if (usePeriod && periodVariants.length > 0) {
+                const periodOr = periodVariants
+                  .map((v) => `metadata->>period.ilike."%${sanitize(v)}%"`)
+                  .join(",");
+                q = q.or(periodOr);
+              }
+
+              const { data: kbData, error: kbError } = await q
+                .order("id", { ascending: false })
+                .limit(limit ?? 5);
+              return { kbData: kbData || [], kbError };
+            };
+
+            // Pass 1: company + period. Pass 2: company only.
+            let { kbData, kbError } = await tryFallback(true);
+            let kbNote =
+              "No structured tables found. Returning ingested-document chunks tagged with this company/period from the knowledge base.";
+            if (!kbError && kbData.length === 0 && periodVariants.length > 0) {
+              const r2 = await tryFallback(false);
+              kbData = r2.kbData;
+              kbError = r2.kbError;
+              if (!kbError && kbData.length > 0) {
+                const periodsSeen = Array.from(
+                  new Set(
+                    (kbData as Array<Record<string, unknown>>)
+                      .map((r) => (r.metadata as Record<string, unknown> | null)?.period)
+                      .filter(Boolean) as string[],
+                  ),
+                );
+                kbNote =
+                  `No structured tables or document chunks for "${fiscalPeriod}". ` +
+                  `Returning chunks for this company across all periods. ` +
+                  `Periods available: ${periodsSeen.join(", ") || "(unspecified)"}.`;
+              }
             }
 
-            const { data: kbData, error: kbError } = await q
-              .order("id", { ascending: false })
-              .limit(limit ?? 5);
-
-            if (!kbError && kbData && kbData.length > 0) {
+            if (!kbError && kbData.length > 0) {
               return {
                 company: company || null,
                 tableType: tableType ?? "all",
@@ -360,7 +512,7 @@ export function createKnowledgeTools(
                     metadata: r.metadata,
                   }),
                 ),
-                note: "No structured tables found. Returning ingested-document chunks tagged with this company/period from the knowledge base.",
+                note: kbNote,
                 total: kbData.length,
               };
             }
@@ -370,6 +522,7 @@ export function createKnowledgeTools(
             company: company || null,
             tableType: tableType ?? "all",
             fiscalPeriod: fiscalPeriod || null,
+            ...(periodNote ? { note: periodNote } : {}),
             tables: tables.map((t) => ({
               id: t.id,
               companyName: t.company_name,
@@ -589,6 +742,106 @@ export function createKnowledgeTools(
             articles: [],
             total:    0,
             error:    err instanceof Error ? err.message : "News search failed",
+          };
+        }
+      },
+    }),
+
+    listFinancialDataInventory: tool({
+      description:
+        "Lists what company/period/table-type data ACTUALLY exists in the database. Use this BEFORE saying 'I don't have data' or guessing what's available — and ALWAYS use this when the user asks meta-questions like 'what companies do you know about', 'what data do you have', 'which periods are covered'. Returns distinct (company_name, fiscal_period, table_type) tuples from extracted_tables and (company, period) from finasaan_documents prose chunks. Optionally filter by a company substring. Cheap, non-vector, exact metadata lookup — never hallucinate company coverage; query this first.",
+      inputSchema: z.object({
+        company: z
+          .string()
+          .optional()
+          .describe(
+            "Optional substring filter — case-insensitive match on company_name and metadata.company. Leave blank to list everything.",
+          ),
+      }),
+      execute: async ({ company }) => {
+        try {
+          const sanitize = (s: string) => s.replace(/[,()\\"]/g, "");
+          const filter = company?.trim() ? sanitize(company.trim()) : null;
+
+          // extracted_tables inventory
+          let tQuery = supabase
+            .from("extracted_tables")
+            .select("company_id, company_name, fiscal_period, table_type")
+            .limit(500);
+          if (filter) {
+            tQuery = tQuery.or(
+              `company_name.ilike."%${filter}%",company_id.ilike."%${filter}%"`,
+            );
+          }
+          const { data: tableRows, error: tErr } = await tQuery;
+          if (tErr) throw new Error(`Table inventory failed: ${tErr.message}`);
+
+          // finasaan_documents inventory (prose chunks)
+          let dQuery = supabase
+            .from("finasaan_documents")
+            .select("metadata")
+            .eq("domain", "financials")
+            .limit(500);
+          if (filter) {
+            dQuery = dQuery.filter(
+              "metadata->>company",
+              "ilike",
+              `%${filter}%`,
+            );
+          }
+          const { data: docRows, error: dErr } = await dQuery;
+          if (dErr) throw new Error(`Document inventory failed: ${dErr.message}`);
+
+          // Aggregate distinct tuples
+          const tableInventory = new Map<
+            string,
+            { company: string; period: string | null; tableType: string; count: number }
+          >();
+          for (const row of (tableRows || []) as Array<Record<string, unknown>>) {
+            const c = (row.company_name as string) || (row.company_id as string) || "(unknown)";
+            const p = (row.fiscal_period as string) || null;
+            const tt = (row.table_type as string) || "general";
+            const key = `${c}|${p ?? ""}|${tt}`;
+            const prev = tableInventory.get(key);
+            if (prev) prev.count++;
+            else tableInventory.set(key, { company: c, period: p, tableType: tt, count: 1 });
+          }
+
+          const docInventory = new Map<
+            string,
+            { company: string | null; period: string | null; chunks: number }
+          >();
+          for (const row of (docRows || []) as Array<{ metadata: Record<string, unknown> | null }>) {
+            const meta = row.metadata || {};
+            const c = (meta.company as string) || null;
+            const p = (meta.period as string) || null;
+            const key = `${c ?? ""}|${p ?? ""}`;
+            const prev = docInventory.get(key);
+            if (prev) prev.chunks++;
+            else docInventory.set(key, { company: c, period: p, chunks: 1 });
+          }
+
+          return {
+            filter: company || null,
+            extractedTables: Array.from(tableInventory.values()).sort((a, b) =>
+              a.company.localeCompare(b.company),
+            ),
+            documentChunks: Array.from(docInventory.values())
+              .filter((r) => r.company)
+              .sort((a, b) => (a.company || "").localeCompare(b.company || "")),
+            totals: {
+              tableRows: (tableRows || []).length,
+              docRows: (docRows || []).length,
+              uniqueTableTuples: tableInventory.size,
+              uniqueDocTuples: docInventory.size,
+            },
+          };
+        } catch (err) {
+          return {
+            filter: company || null,
+            extractedTables: [],
+            documentChunks: [],
+            error: err instanceof Error ? err.message : "Inventory query failed",
           };
         }
       },

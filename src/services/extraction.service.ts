@@ -13,6 +13,28 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { AI_GATEWAY_CONFIG } from "../types/chatbot.types";
 
+// Strip characters that PostgreSQL rejects when payloads arrive as JSON via
+// PostgREST: null bytes and lone UTF-16 surrogates. PDF-derived text can
+// leak these and trigger "unsupported Unicode escape sequence" on insert.
+const NUL_RE = new RegExp(String.fromCharCode(0), "g");
+const LONE_SURROGATE_RE = /[\uD800-\uDFFF]/g;
+function pgSanitize<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(NUL_RE, "").replace(LONE_SURROGATE_RE, "") as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => pgSanitize(v)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = pgSanitize(v);
+    }
+    return out as T;
+  }
+  return value;
+}
+
 // ============================================================================
 // Types — Text-Based Extraction (existing)
 // ============================================================================
@@ -414,17 +436,17 @@ export async function storeExtractedTable(
       source_document_id: record.source_document_id,
       source_type: record.source_type,
       company_id: record.company_id,
-      company_name: record.company_name,
-      table_name: record.table_name,
+      company_name: pgSanitize(record.company_name),
+      table_name: pgSanitize(record.table_name),
       table_type: record.table_type,
-      fiscal_period: record.fiscal_period,
+      fiscal_period: pgSanitize(record.fiscal_period),
       fiscal_period_end: record.fiscal_period_end,
-      currency: record.currency,
-      table_unit: record.table_unit,
+      currency: pgSanitize(record.currency),
+      table_unit: pgSanitize(record.table_unit),
       comparative: record.comparative,
-      headers: record.headers,
-      rows: record.rows,
-      raw_table_text: record.raw_table_text,
+      headers: pgSanitize(record.headers),
+      rows: pgSanitize(record.rows),
+      raw_table_text: pgSanitize(record.raw_table_text),
       extraction_model: record.extraction_model,
     })
     .select("id")
@@ -454,17 +476,17 @@ export async function storeExtractedTables(
         source_document_id: record.source_document_id,
         source_type: record.source_type,
         company_id: record.company_id,
-        company_name: record.company_name,
-        table_name: record.table_name,
+        company_name: pgSanitize(record.company_name),
+        table_name: pgSanitize(record.table_name),
         table_type: record.table_type,
-        fiscal_period: record.fiscal_period,
+        fiscal_period: pgSanitize(record.fiscal_period),
         fiscal_period_end: record.fiscal_period_end,
-        currency: record.currency,
-        table_unit: record.table_unit,
+        currency: pgSanitize(record.currency),
+        table_unit: pgSanitize(record.table_unit),
         comparative: record.comparative,
-        headers: record.headers,
-        rows: record.rows,
-        raw_table_text: record.raw_table_text,
+        headers: pgSanitize(record.headers),
+        rows: pgSanitize(record.rows),
+        raw_table_text: pgSanitize(record.raw_table_text),
         extraction_model: record.extraction_model,
       }))
     )

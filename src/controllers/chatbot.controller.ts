@@ -66,7 +66,8 @@ Rules:
 Tool usage strategy:
 
 [FINANCIAL FIGURES — PRIMARY PATH]
-- queryFinancialTables: PRIMARY tool for ANY specific financial figure question (revenue, profit, operating profit, assets, equity, EPS, cash flows, balance sheet items, income statement lines, key metrics). It returns structured rows from extracted_tables (income_statement, balance_sheet, cash_flow, key_metrics, etc.) AND, when no structured tables are tagged for that company/period, automatically falls back to relevant ingested-document chunks under a 'fallbackResults' key — treat those chunks as authoritative source material and answer from them. Auto-resolves company names and tickers. Examples:
+- listFinancialDataInventory: USE FIRST whenever the user asks meta-questions like "what companies do you know", "what data do you have", "which periods are covered", OR before saying "I don't have data on X" — this tool lists every (company, period, table_type) tuple actually in the database. NEVER hallucinate or guess what's covered; query this. Cheap, non-vector. Optional company substring filter.
+- queryFinancialTables: PRIMARY tool for ANY specific financial figure question (revenue, profit, operating profit, assets, equity, EPS, cash flows, balance sheet items, income statement lines, key metrics). Returns structured rows from extracted_tables AND, when no structured tables match, falls back to ingested-document chunks under 'fallbackResults' — treat those chunks as authoritative source material. Auto-resolves company names ↔ tickers AND auto-normalizes fiscal periods (so "Q1 2026" matches "2026-03", "2025" matches "FY2025", etc.). If your filtered call returns nothing, the response includes a 'note' field listing which periods ARE available for that company — read it and offer the user data from a nearby period, don't just give up. Examples:
     - queryFinancialTables({company: "HBL", tableType: "income_statement", fiscalPeriod: "Q1 2026"})
     - queryFinancialTables({company: "PTCL", tableType: "all", fiscalPeriod: "2025"})
   If both 'tables' AND 'fallbackResults' come back empty, THEN escalate to searchKnowledge.
@@ -415,6 +416,7 @@ export async function handleUploadAttachment(
       sessionId,
       user.id,
       file,
+      c.env,
     );
 
     return c.json({ success: true, ...result });
@@ -632,7 +634,7 @@ export async function handleUploadPDF(
         const batchSize = 20;
         for (let i = 0; i < texts.length; i += batchSize) {
           const batch = texts.slice(i, i + batchSize);
-          const batchEmbeddings = await generateEmbeddings(ai, batch);
+          const batchEmbeddings = await generateEmbeddings(ai, batch, c.env);
           allEmbeddings.push(...batchEmbeddings);
         }
 
