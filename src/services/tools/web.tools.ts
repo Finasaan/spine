@@ -33,8 +33,8 @@ interface BraveSearchResponse {
 export function createWebTools(braveApiKey?: string) {
   return {
     webSearch: tool({
-      description: `Search the web for Pakistan financial data, stock metrics, or market information that could not be found using internal tools. LAST RESORT ONLY — call this only after searchKnowledge, queryFinancialTables, getStockDetail, getRecentHeadlines, and other relevant internal tools have returned insufficient data. Best for: live P/E ratios not in DB, recent company results, current market metrics, or Pakistan economic data. Always cite the source URL in your response when using results from this tool.`,
-      parameters: z.object({
+      description: `Brave Search over the public web. LAST RESORT ONLY — call this strictly AFTER all relevant internal tools have come back empty (queryFinancialTables tables AND fallbackResults empty, searchKnowledge empty, getStockDetail/getStockHistory/getRecentHeadlines/searchRecentNews/searchTaxDocs all insufficient). Good for: live P/E or other live ratios not stored in DB, very recent quarterly results not yet ingested, current KSE-100 levels intraday, Pakistan macro indicators, breaking news Finasaan has not yet pulled. Use 'recency' to bound the time window: 'day'/'week' for live market data, 'month' for recent earnings, 'year' for older context, omit for historical. ALWAYS cite the source URL in your response and explicitly note the data is from the web (not Finasaan's verified internal database).`,
+      inputSchema: z.object({
         query: z.string().describe(
           "Specific search query. Include company name/ticker and the exact metric needed. E.g. 'OGDC Pakistan P/E ratio 2025', 'KSE-100 index today', 'HBL earnings Q1 2025 Pakistan'."
         ),

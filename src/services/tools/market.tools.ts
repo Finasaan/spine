@@ -12,7 +12,7 @@ export function createMarketTools(supabase: SupabaseClient) {
   return {
     getMarketSummary: tool({
       description:
-        "Get the latest KSE-100 and KSE-30 index values, daily change, and volume. Use for market overview questions.",
+        "Latest snapshot of PSX headline indices (KSE-100, KSE-30, and any others tracked in market_summary) — index name, previous close, current close, net change, and percent change. Use for market-overview questions: 'how is the market today', 'KSE-100 close', 'index movement'. Returns up to the 5 most recent index rows by trade_date. For specific stock prices use getStockDetail; for top-moving stocks use getTopStocks.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -51,7 +51,7 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     searchCompanies: tool({
       description:
-        "Search PSX-listed companies by name, ticker symbol, or sector. Use for finding specific companies or browsing companies in a sector.",
+        "Resolve a PSX ticker from a company name, or browse companies by sector. CALL THIS FIRST whenever you don't know the exact PSX ticker — NEVER guess or invent tickers. Examples: 'Meezan Bank' → searchCompanies({query:'Meezan'}) returns 'MEBL'; 'cement companies' → listSectors → searchCompanies({sectorId}). Returns company id, ticker (symbol), full name, sector_id. Once you have the ticker, hand off to getStockDetail / getStockHistory / queryFinancialTables. Does NOT return prices — use getStockDetail for price data.",
       inputSchema: z.object({
         query: z
           .string()
@@ -120,7 +120,7 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     getStockDetail: tool({
       description:
-        "Get detailed info about a specific PSX stock including latest price data. Pass the PSX ticker symbol (e.g. PTCL, HBL, MEBL). If you don't know the exact ticker, call searchCompanies first to resolve it.",
+        "Snapshot for ONE PSX stock: company profile (name, sector_id, description, CEO, website) + latest single-day price row (open, high, low, close, volume, value_traded). Pass the PSX ticker symbol (e.g. 'PTCL', 'HBL', 'MEBL'). Auto-falls-back to fuzzy matching on ticker+company name if exact match misses, but DO NOT guess — call searchCompanies first when unsure. For price history / trends use getStockHistory; for financial-statement figures (revenue, profit, EPS) use queryFinancialTables. RECOVERY: if this returns 'not found', call searchCompanies with the user's original phrase and retry — never give up after one miss.",
       inputSchema: z.object({
         symbol: z.string().describe("PSX ticker symbol (e.g. PTCL, HBL) or company name if ticker is unknown"),
       }),
@@ -199,7 +199,7 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     getTopStocks: tool({
       description:
-        "Get top-performing or most active PSX stocks. Supports sorting by value traded, volume, or price, and optional sector filtering. Use for 'top stocks', 'most active', 'best performing in sector X' type questions.",
+        "Ranked list of PSX stocks for the LATEST trading day. sortBy: 'value_traded' (default — best proxy for liquidity / most-active), 'volume' (highest share count traded), or 'close_price' (highest priced). Optional sectorId narrows to one sector (call listSectors first to get the UUID). Use for 'top stocks', 'most active', 'highest volume', 'best performers in [sector]' style questions. Returns symbol, company name, open/close, volume, value traded for each. For a single stock's history use getStockHistory.",
       inputSchema: z.object({
         sortBy: z
           .enum(["value_traded", "volume", "close_price"])
@@ -290,7 +290,7 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     listSectors: tool({
       description:
-        "List all PSX sectors/industries. Use this to discover available sectors before filtering stocks or funds by sector. Returns sector IDs and names.",
+        "List every PSX sector / industry classification with its UUID and name (e.g. 'Commercial Banks', 'Oil & Gas Exploration', 'Cement'). Call this BEFORE any tool that takes a sectorId parameter (searchCompanies, getTopStocks, queryMutualFunds via category resolution) when you need to filter by a specific sector. Cheap call — safe to run whenever sector classification is in play.",
       inputSchema: z.object({}),
       execute: async () => {
         try {
@@ -320,7 +320,7 @@ export function createMarketTools(supabase: SupabaseClient) {
 
     getStockHistory: tool({
       description:
-        "Get historical daily price data for a specific stock. Use for price trend analysis, performance over time, or chart data. Pass the PSX ticker symbol (e.g. ENGRO, HBL, MEBL). If you don't know the exact ticker, call searchCompanies first to resolve it.",
+        "Daily OHLCV history (open, high, low, close, volume, value_traded) for ONE PSX stock — use for trend analysis, % change over a window, performance charts, volatility. Pass the PSX ticker symbol (e.g. 'ENGRO', 'HBL'). 'days' parameter sets the lookback window in trading days (default 30, max 1825 = ~5 years). Auto-fuzzy-matches ticker / company name as a fallback, but call searchCompanies first when unsure. RECOVERY: if 'not found', call searchCompanies and retry. For latest single-day price use getStockDetail; for financial-statement figures use queryFinancialTables.",
       inputSchema: z.object({
         symbol: z.string().describe("PSX ticker symbol (e.g. ENGRO, HBL) or company name if ticker is unknown"),
         days: z.coerce

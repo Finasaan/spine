@@ -86,7 +86,7 @@ export function createKnowledgeTools(
   return {
     searchKnowledge: tool({
       description:
-        "Search the Finasaan knowledge base using semantic search. Use this for: insurance products/policies/comparisons, company annual reports/quarterly reports, financial literacy topics, regulatory information, and any financial question not answerable by structured stock/fund data tools. This is the primary tool for insurance-related queries. Supports optional company and period filters to narrow results when the user asks about a specific company or time period.",
+        "Semantic search over the ingested knowledge base (finasaan_documents) — annual/quarterly report prose, insurance policy documents, mutual-fund factsheets, financial-literacy content, regulatory material. PRIMARY tool for: (a) qualitative content — management commentary, report notes, policy details, regulatory context; (b) ALL insurance product/policy/comparison questions. SECONDARY / FALLBACK tool for specific financial figures: only call this for revenue/profit/balance-sheet/cash-flow/ratio numbers AFTER queryFinancialTables has returned with both 'tables' and 'fallbackResults' empty. Pass domain ('financials' | 'insurance' | 'mutual_funds' | 'all') and optionally company/period filters — auto-resolves company name variations (e.g. 'Nishat Power' ↔ 'NPL').",
       inputSchema: z.object({
         query: z.string().describe("Search query string"),
         domain: z
@@ -185,7 +185,7 @@ export function createKnowledgeTools(
 
     searchTaxDocs: tool({
       description:
-        "Search Pakistan taxation documents (Income Tax Ordinance, Rules, and Circulars) using semantic search. Use this for questions about Pakistan tax laws, slabs, exemptions, and official FBR guidelines.",
+        "Semantic search over the canonical Pakistan tax corpus: Income Tax Ordinance, Income Tax Rules, and FBR Circulars. ALWAYS use this — never searchKnowledge or webSearch — for ANY taxation question: salary/business/property tax slabs, withholding rates, exemptions, allowable deductions/credits (e.g. pension fund credit), tax-filing procedures, FBR notifications, ordinance section lookups. Filter by docType ('ordinance' | 'rules' | 'circular' | 'all'). Returns chunks with the official source name and URL — always cite these.",
       inputSchema: z.object({
         query: z.string().describe("Search query string (e.g. 'tax slabs for salary', 'pension fund tax credit')"),
         docType: z.enum(["ordinance", "rules", "circular", "all"]).optional().default("all").describe("Filter by document type"),
@@ -235,7 +235,7 @@ export function createKnowledgeTools(
 
     queryFinancialTables: tool({
       description:
-        "Query structured financial tables (income statements, balance sheets, cash flows, key metrics, etc.) extracted from uploaded company reports. Use this when the user asks about specific financial figures, revenue, profit, assets, liabilities, or any numerical data from annual/quarterly reports. Returns actual structured data with headers and rows. Company names and tickers are automatically resolved. If no structured tables are found, the response will contain a `fallbackResults` array with relevant ingested-document chunks tagged with this company/period — treat those as authoritative source material and answer from them; do NOT report that no data exists when fallbackResults is non-empty.",
+        "PRIMARY tool for ANY specific financial figure from a Pakistani listed company's reports — revenue, gross/operating/net profit, EBITDA, EPS, total assets, equity, liabilities, cash flows, segment data, key ratios, etc. Returns structured rows (headers + data) from extracted_tables — categorised as income_statement, balance_sheet, cash_flow, key_metrics, segment_data, fund_portfolio, premium_schedule, coverage_table, rate_table, or general. Auto-resolves company names ↔ tickers (e.g. 'HBL' ↔ 'Habib Bank Limited'). IMPORTANT FALLBACK BEHAVIOR: if no structured tables are tagged for that company/period, the response replaces 'tables' with a 'fallbackResults' array containing ingested-document chunks tagged with this company/period — treat those chunks as authoritative source material and answer from them. Only escalate to searchKnowledge when BOTH 'tables' and 'fallbackResults' come back empty. Always call this BEFORE searchKnowledge for numeric/figure questions.",
       inputSchema: z.object({
         company: z
           .string()
@@ -405,7 +405,7 @@ export function createKnowledgeTools(
 
     searchConversationDocument: tool({
       description:
-        "Search within documents the user uploaded to this conversation. Use this whenever the user asks about an uploaded file or document.",
+        "Semantic search restricted to files the user uploaded into THIS conversation (PDF/document attachments). ALWAYS use this — and use it FIRST, before any other knowledge tool — when the user references 'this document', 'the file I just uploaded', 'this PDF', or asks questions whose answers would only be in their attached file. Scoped to the current sessionId, so it never leaks other users' uploads or the global knowledge base. If the answer requires both the user's upload and general data (e.g. 'compare what's in this PDF to HBL's actual Q1 numbers'), call this first, then call queryFinancialTables / searchKnowledge.",
       inputSchema: z.object({
         query: z.string().describe("Search query string"),
         limit: z.coerce
@@ -469,7 +469,7 @@ export function createKnowledgeTools(
 
     getRecentHeadlines: tool({
       description:
-        "Get the most recent economic and business news for Pakistan, sourced from Dawn Business, Profit Pakistan Today, and Tribune Business. Use this when the user asks what's happening in the market, recent developments, or general news. Returns articles ordered by most recent first.",
+        "Browse the latest Pakistan economic/business news from ingested sources (Dawn Business, Profit Pakistan Today, Tribune Business). Use for OPEN-ENDED 'what's happening' style questions where the user has NOT named a specific topic, company, or sector. Each article ships with an AI summary, sentiment tag (positive/negative/neutral), affected sectors, affected tickers, and impact analysis — surface these in your response. Optional filters: sentiment, sector. For topic/company/ticker-specific news, use searchRecentNews instead.",
       inputSchema: z.object({
         limit: z.coerce.number().int().min(1).max(10).optional().default(5)
           .describe("Number of articles to return"),
@@ -519,7 +519,7 @@ export function createKnowledgeTools(
 
     searchRecentNews: tool({
       description:
-        "Search recent Pakistan economic and business news by topic, company, sector, or ticker. Use when the user asks about news on a specific topic, company, sector, or event.",
+        "Targeted search of recent Pakistan economic/business news by TOPIC, COMPANY, TICKER, SECTOR, or EVENT. Use whenever the user asks about news on something specific — 'news on HBL', 'OGDC announcements', 'banking sector news', 'IMF deal updates'. Internally tries vector similarity search first (default min similarity 0.40), then falls back to recency-ordered articles. Default 30-day window, max 90 days. Returns same enriched fields as getRecentHeadlines (summary, sentiment, affected_sectors, affected_tickers, impact_analysis). For broad 'what's happening' without a target, use getRecentHeadlines.",
       inputSchema: z.object({
         query:        z.string().describe("Natural language search query or company/ticker name"),
         limit:        z.coerce.number().int().min(1).max(8).optional().default(5).describe("Results to return"),
