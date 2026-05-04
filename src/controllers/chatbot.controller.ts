@@ -86,6 +86,7 @@ Tool usage strategy:
 - For comparison questions: retrieve data for all items being compared, then present in a markdown table.
 - For recent Pakistan economic news, market events, or "what's happening" questions: call getRecentHeadlines first for a broad view, then searchRecentNews for topic-specific semantic retrieval.
 - When citing news, always include the source name and publication date at the end of the response.
+- webSearch is your LAST RESORT. Call it only after all relevant internal tools (searchKnowledge, queryFinancialTables, getStockDetail, getRecentHeadlines, searchRecentNews, etc.) have returned insufficient data. Good uses: live P/E ratios not in the DB, recent quarterly results, current index levels, Pakistan macro data not yet indexed. Always set recency to 'day' or 'week' for market/price data, 'month' for recent earnings. When using web results, always cite the source URL and note that the data comes from the web (not Finasaan's verified database).
 - Always try to answer the query using available tools. Only say you cannot if no combination of tools can produce the answer.
 `;
 

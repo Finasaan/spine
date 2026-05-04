@@ -8,6 +8,7 @@ import { createKnowledgeTools } from "./knowledge.tools";
 import { createMarketTools } from "./market.tools";
 import { createFundsTools } from "./funds.tools";
 import { createUserTools } from "./user.tools";
+import { createWebTools } from "./web.tools";
 
 export type { } from "./knowledge.tools";
 
@@ -20,13 +21,14 @@ export function createAllTools(
   ai: Ai,
   userId: string,
   sessionId: string,
-  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string }
+  env?: { CLOUDFLARE_ACCOUNT_ID?: string; CLOUDFLARE_API_TOKEN?: string; BRAVE_SEARCH_API_KEY?: string }
 ) {
   return {
     ...createKnowledgeTools(supabase, ai, sessionId, env),
     ...createMarketTools(supabase),
     ...createFundsTools(supabase),
     ...createUserTools(supabase, userId, env as any),
+    ...createWebTools(env?.BRAVE_SEARCH_API_KEY),
   };
 }
 
@@ -35,3 +37,4 @@ export { createKnowledgeTools } from "./knowledge.tools";
 export { createMarketTools } from "./market.tools";
 export { createFundsTools } from "./funds.tools";
 export { createUserTools } from "./user.tools";
+export { createWebTools } from "./web.tools";
